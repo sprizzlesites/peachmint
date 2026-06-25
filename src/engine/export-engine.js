@@ -14,7 +14,7 @@
 
 import { Compositor }              from './compositor.js';
 import { DecoderPool }             from './decoder.js';
-import { clipsAtTime, totalDuration } from './edl.js';
+import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
 import { parseCube, parse3dl }     from './lut.js';
 
 const MP4_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
@@ -175,6 +175,7 @@ export class ExportEngine {
   async _renderFrame(compositor, decoders, project, time, lutCache) {
     const bg = project.canvas?.background;
     compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
+    compositor.setTime(time);
 
     const active = clipsAtTime(project, time);
     for (const { clip, track } of active) {
@@ -187,7 +188,8 @@ export class ExportEngine {
         continue;
       }
 
-      const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+      const clipTime  = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+      const outFactor = getTransitionOutFactor(clip, time);
       try {
         const dec = await decoders.getDecoder(asset);
         await dec.seekTo(clipTime);
@@ -198,12 +200,34 @@ export class ExportEngine {
             ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
             : null;
           compositor.setActiveLUT(lutTex);
-          compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight);
+          compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor ?? 1);
         }
       } catch {
         compositor.setActiveLUT(null);
         compositor.drawSolid([0.2, 0.05, 0.05, 1]);
       }
+    }
+
+    // Render clips fading in via cross-dissolve
+    const transIn = transitionClipsAtTime(project, time);
+    for (const { clip, track, factor, trStart } of transIn) {
+      if (track.type === 'audio') continue;
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (!asset?.storageKey) continue;
+      const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
+      try {
+        const dec = await decoders.getDecoder(asset);
+        await dec.seekTo(clipMediaTime);
+        const src = dec.getSource();
+        if (src) {
+          const props  = resolveProps(clip, time);
+          const lutTex = lutCache
+            ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
+            : null;
+          compositor.setActiveLUT(lutTex);
+          compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, factor);
+        }
+      } catch {}
     }
   }
 

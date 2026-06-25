@@ -261,6 +261,47 @@ export function clipsAtTime(project, time) {
   return result;
 }
 
+/**
+ * Returns clips currently fading IN via a cross-dissolve transition defined on
+ * the preceding clip of the same track.  These clips have not yet reached their
+ * startTime in the EDL but are already being rendered with rising opacity.
+ *
+ * Returns [{ clip, track, factor, trStart }] where factor 0→1 is the blend weight.
+ */
+export function transitionClipsAtTime(project, time) {
+  const result = [];
+  const byZ = [...project.tracks].sort((a, b) => a.zIndex - b.zIndex);
+  for (const track of byZ) {
+    if (track.muted || track.type === 'audio') continue;
+    const sorted = [...track.clips].sort((a, b) => a.startTime - b.startTime);
+    for (let i = 0; i + 1 < sorted.length; i++) {
+      const out = sorted[i];
+      const tr  = out.transition;
+      if (!tr || !(tr.duration > 0)) continue;
+      const outEnd  = out.startTime + out.duration;
+      const trStart = outEnd - tr.duration;
+      if (time < trStart || time >= outEnd) continue;
+      const next = sorted[i + 1];
+      if (next.startTime < outEnd) continue; // already overlapping; handled by clipsAtTime
+      result.push({ clip: next, track, factor: (time - trStart) / tr.duration, trStart });
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns the fade-out opacity multiplier (1→0) for a clip with a dissolve
+ * transition at its end, or null if the clip is not currently fading out.
+ */
+export function getTransitionOutFactor(clip, time) {
+  const tr = clip.transition;
+  if (!tr || !(tr.duration > 0)) return null;
+  const outEnd  = clip.startTime + clip.duration;
+  const trStart = outEnd - tr.duration;
+  if (time < trStart || time >= outEnd) return null;
+  return 1 - (time - trStart) / tr.duration;
+}
+
 /** Total project duration in seconds (end of the last clip across all tracks). */
 export function totalDuration(project) {
   let max = 0;
@@ -292,6 +333,7 @@ function defaultClipProperties() {
     transform: { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0, anchorX: 0.5, anchorY: 0.5 },
     crop: { left: 0, right: 0, top: 0, bottom: 0 },
     color: { exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0 },
+    vfx: { vignette: 0, grain: 0, sharpen: 0, aberration: 0, pixelate: 0 },
     blendMode: 'normal',
     volume: 1,
   };

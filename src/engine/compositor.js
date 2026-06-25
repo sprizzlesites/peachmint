@@ -46,15 +46,52 @@ uniform float u_chroma_threshold;
 uniform float u_chroma_smooth;
 // Shape mask
 uniform int   u_mask_type;    // 0=none 1=rect 2=ellipse
-uniform vec2  u_mask_center;  // UV position of mask center
-uniform vec2  u_mask_size;    // UV extent (width, height)
+uniform vec2  u_mask_center;
+uniform vec2  u_mask_size;
 uniform float u_mask_feather;
 uniform int   u_mask_invert;
+// VFX
+uniform float u_vfx_vignette;
+uniform float u_vfx_grain;
+uniform float u_vfx_sharpen;
+uniform float u_vfx_aberration;
+uniform float u_vfx_pixelate;
+uniform float u_vfx_time;
 out vec4 fragColor;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 void main() {
-  vec4 s = texture(u_tex, v_uv);
+  // VFX: Pixelate — quantise UV before sampling
+  vec2 uv = v_uv;
+  if (u_vfx_pixelate > 0.001) {
+    uv = clamp((floor(v_uv / u_vfx_pixelate) + 0.5) * u_vfx_pixelate, 0.0, 1.0);
+  }
+
+  vec4 s = texture(u_tex, uv);
   vec3 c = s.rgb;
+
+  // VFX: Chromatic aberration — resample R/B at offset UVs
+  if (u_vfx_aberration > 0.001) {
+    vec2 dir = (uv - 0.5) * u_vfx_aberration;
+    s.r = texture(u_tex, clamp(uv + dir, 0.0, 1.0)).r;
+    s.b = texture(u_tex, clamp(uv - dir, 0.0, 1.0)).b;
+    c = s.rgb;
+  }
+
+  // VFX: Sharpen (unsharp mask, 3×3 box blur)
+  if (u_vfx_sharpen > 0.001) {
+    vec2 ts = 1.0 / vec2(textureSize(u_tex, 0));
+    vec3 blur = (
+      texture(u_tex, uv + vec2(-ts.x, -ts.y)).rgb +
+      texture(u_tex, uv + vec2( 0.0,  -ts.y)).rgb +
+      texture(u_tex, uv + vec2( ts.x, -ts.y)).rgb +
+      texture(u_tex, uv + vec2(-ts.x,  0.0)).rgb +
+      texture(u_tex, uv + vec2( ts.x,  0.0)).rgb +
+      texture(u_tex, uv + vec2(-ts.x,  ts.y)).rgb +
+      texture(u_tex, uv + vec2( 0.0,   ts.y)).rgb +
+      texture(u_tex, uv + vec2( ts.x,  ts.y)).rgb
+    ) * 0.125;
+    c = clamp(c + (c - blur) * u_vfx_sharpen, 0.0, 1.0);
+  }
 
   // Chroma key (on raw footage, before color correction)
   if (u_chroma_enabled != 0) {
@@ -80,9 +117,21 @@ void main() {
   // 3D LUT
   if (u_lut_enabled != 0) c = texture(u_lut, c).rgb;
 
+  // VFX: Vignette — darken corners
+  if (u_vfx_vignette > 0.001) {
+    float vd = length(v_uv - 0.5) * 1.4142;
+    c *= max(0.0, 1.0 - u_vfx_vignette * vd * vd);
+  }
+
+  // VFX: Film grain — time-animated pseudo-random noise
+  if (u_vfx_grain > 0.001) {
+    float n = fract(sin(dot(v_uv + fract(u_vfx_time * 2.7182818), vec2(12.9898, 78.233))) * 43758.5453);
+    c = clamp(c + (n - 0.5) * u_vfx_grain * 0.3, 0.0, 1.0);
+  }
+
   vec4 out_color = vec4(c, s.a * u_opacity);
 
-  // Shape mask
+  // Shape mask (uses v_uv for screen-space accuracy, independent of pixelate)
   if (u_mask_type != 0) {
     float feather = max(u_mask_feather, 0.001);
     vec2 uv_c = v_uv - u_mask_center;
@@ -177,6 +226,12 @@ export class Compositor {
       maskSize:       gl.getUniformLocation(p, 'u_mask_size'),
       maskFeather:    gl.getUniformLocation(p, 'u_mask_feather'),
       maskInvert:     gl.getUniformLocation(p, 'u_mask_invert'),
+      vfxVignette:    gl.getUniformLocation(p, 'u_vfx_vignette'),
+      vfxGrain:       gl.getUniformLocation(p, 'u_vfx_grain'),
+      vfxSharpen:     gl.getUniformLocation(p, 'u_vfx_sharpen'),
+      vfxAberration:  gl.getUniformLocation(p, 'u_vfx_aberration'),
+      vfxPixelate:    gl.getUniformLocation(p, 'u_vfx_pixelate'),
+      vfxTime:        gl.getUniformLocation(p, 'u_vfx_time'),
     };
 
     // Set initial disabled state for chroma/mask (uniforms default to 0 in GL but be explicit)
@@ -242,7 +297,7 @@ export class Compositor {
    * @param {number} naturalW — natural pixel width of source media
    * @param {number} naturalH — natural pixel height of source media
    */
-  drawClip(source, props, naturalW, naturalH) {
+  drawClip(source, props, naturalW, naturalH, opacityMult = 1) {
     if (!this._ready || !source) return;
     const gl = this._gl;
     const { u } = this;
@@ -268,7 +323,7 @@ export class Compositor {
     const col    = props?.color  ?? {};
     const chroma = props?.chroma ?? {};
     const mask   = props?.mask   ?? {};
-    gl.uniform1f(this._uniforms.opacity,     props?.opacity     ?? 1);
+    gl.uniform1f(this._uniforms.opacity,     (props?.opacity ?? 1) * opacityMult);
     gl.uniform1f(this._uniforms.exposure,    col.exposure       ?? 0);
     gl.uniform1f(this._uniforms.contrast,    col.contrast       ?? 0);
     gl.uniform1f(this._uniforms.saturation,  col.saturation     ?? 0);
@@ -288,6 +343,14 @@ export class Compositor {
     gl.uniform2fv(this._uniforms.maskSize,   [mask.w ?? 0.5, mask.h ?? 0.5]);
     gl.uniform1f(this._uniforms.maskFeather, mask.feather ?? 0.05);
     gl.uniform1i(this._uniforms.maskInvert,  mask.invert  ? 1  : 0);
+
+    // VFX uniforms
+    const vfx = props?.vfx ?? {};
+    gl.uniform1f(this._uniforms.vfxVignette,   vfx.vignette   ?? 0);
+    gl.uniform1f(this._uniforms.vfxGrain,      vfx.grain      ?? 0);
+    gl.uniform1f(this._uniforms.vfxSharpen,    vfx.sharpen    ?? 0);
+    gl.uniform1f(this._uniforms.vfxAberration, vfx.aberration ?? 0);
+    gl.uniform1f(this._uniforms.vfxPixelate,   vfx.pixelate   ?? 0);
 
     // Build + set transform matrix
     const xform = buildTransform(props?.transform, naturalW, naturalH, this._canvasW, this._canvasH);
@@ -322,6 +385,11 @@ export class Compositor {
     gl.uniform1i(this._uniforms.lutEnabled,    0);
     gl.uniform1i(this._uniforms.chromaEnabled, 0);
     gl.uniform1i(this._uniforms.maskType,      0);
+    gl.uniform1f(this._uniforms.vfxVignette,   0);
+    gl.uniform1f(this._uniforms.vfxGrain,      0);
+    gl.uniform1f(this._uniforms.vfxSharpen,    0);
+    gl.uniform1f(this._uniforms.vfxAberration, 0);
+    gl.uniform1f(this._uniforms.vfxPixelate,   0);
     gl.uniform1f(this._uniforms.opacity, 1);
     gl.uniform1f(this._uniforms.exposure, 0);
     gl.uniform1f(this._uniforms.contrast, 0);
@@ -376,6 +444,12 @@ export class Compositor {
     if (!tex || !this._gl) return;
     if (this._activeLUT === tex) this._activeLUT = null;
     this._gl.deleteTexture(tex);
+  }
+
+  /** Update the animation time used by grain and other time-varying VFX. */
+  setTime(t) {
+    if (!this._ready) return;
+    this._gl.uniform1f(this._uniforms.vfxTime, t);
   }
 
   get isReady() { return this._ready; }

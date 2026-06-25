@@ -102,6 +102,15 @@ export class Inspector {
       </div>
 
       <div class="pm-insp-section">
+        <div class="pm-insp-section-label">VFX</div>
+        ${propRow('Vignette',   'vfx.vignette',   p.vfx?.vignette   ?? 0, 0, 1,    0.01,  hasKF('vfx.vignette'))}
+        ${propRow('Grain',      'vfx.grain',      p.vfx?.grain      ?? 0, 0, 1,    0.01,  hasKF('vfx.grain'))}
+        ${propRow('Sharpen',    'vfx.sharpen',    p.vfx?.sharpen    ?? 0, 0, 5,    0.1,   hasKF('vfx.sharpen'))}
+        ${propRow('Aberration', 'vfx.aberration', p.vfx?.aberration ?? 0, 0, 0.05, 0.001, hasKF('vfx.aberration'))}
+        ${propRow('Pixelate',   'vfx.pixelate',   p.vfx?.pixelate   ?? 0, 0, 1,    0.01,  hasKF('vfx.pixelate'))}
+      </div>
+
+      <div class="pm-insp-section">
         <div class="pm-insp-section-label">Chroma Key</div>
         <div class="pm-insp-row">
           <span class="pm-insp-row-label">Enabled</span>
@@ -145,6 +154,36 @@ export class Inspector {
       </div>
 
       <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Transition</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Out type</span>
+          <select class="pm-tr-type pm-insp-select">
+            <option value="none"     ${!clip.transition || clip.transition.type === 'none' ? 'selected' : ''}>None</option>
+            <option value="dissolve" ${clip.transition?.type === 'dissolve' ? 'selected' : ''}>Dissolve</option>
+          </select>
+        </div>
+        ${clip.transition && clip.transition.type !== 'none' ? `
+          <div class="pm-insp-row">
+            <span class="pm-insp-row-label">Duration (s)</span>
+            <input type="number" class="pm-tr-dur pm-insp-num"
+                   value="${(clip.transition.duration ?? 0.5).toFixed(2)}"
+                   min="0.05" max="10" step="0.05" aria-label="Transition duration">
+          </div>
+        ` : ''}
+      </div>
+
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Preset</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Color / VFX / Mask</span>
+          <div class="pm-insp-preset-controls">
+            <button class="pm-btn-sm" id="pm-insp-preset-save">Save…</button>
+            <button class="pm-btn-sm" id="pm-insp-preset-load">Load…</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pm-insp-section">
         <div class="pm-insp-section-label">Keyframes</div>
         <div id="pm-insp-kf-list">${buildKfList(clip)}</div>
       </div>
@@ -180,6 +219,16 @@ export class Inspector {
     maskTypeEl?.addEventListener('change', () => this._onMaskTypeChange(maskTypeEl.value));
     const maskInvertEl = this._el.querySelector('.pm-mask-invert');
     maskInvertEl?.addEventListener('change', () => this._onMaskInvertChange(maskInvertEl.checked));
+
+    // Wire transition controls
+    const trTypeEl = this._el.querySelector('.pm-tr-type');
+    trTypeEl?.addEventListener('change', () => this._onTransitionTypeChange(trTypeEl.value));
+    const trDurEl = this._el.querySelector('.pm-tr-dur');
+    trDurEl?.addEventListener('change', () => this._onTransitionDurChange(parseFloat(trDurEl.value)));
+
+    // Wire preset controls
+    this._el.querySelector('#pm-insp-preset-save')?.addEventListener('click', () => this._onPresetSave());
+    this._el.querySelector('#pm-insp-preset-load')?.addEventListener('click', () => this._onPresetLoad());
   }
 
   showTrack(track) {
@@ -303,6 +352,80 @@ export class Inspector {
       execute: () => { (clip.properties.mask ??= {}).invert = inverted; this._pm.markDirty(); },
       undo:    () => { (clip.properties.mask ??= {}).invert = old;      this._pm.markDirty(); },
     });
+  }
+
+  _onTransitionTypeChange(type) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    this._history.snapshotCommand('Set transition type', () => {
+      clip.transition = type === 'none'
+        ? null
+        : { type, duration: clip.transition?.duration ?? 0.5 };
+    });
+    this._pm.markDirty();
+    this.showClip(clip);
+  }
+
+  _onTransitionDurChange(dur) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project || !clip.transition) return;
+    const old = clip.transition.duration;
+    this._history.execute({
+      label: 'Set transition duration',
+      execute: () => { clip.transition.duration = dur; this._pm.markDirty(); },
+      undo:    () => { clip.transition.duration = old; this._pm.markDirty(); },
+    });
+  }
+
+  _onPresetSave() {
+    const clip = this._currentClip;
+    if (!clip) return;
+    const p = clip.properties;
+    const preset = {
+      pmpreset: 1,
+      name: 'Preset',
+      properties: {
+        color:  p.color  ? JSON.parse(JSON.stringify(p.color))  : {},
+        vfx:    p.vfx    ? JSON.parse(JSON.stringify(p.vfx))    : {},
+        chroma: p.chroma ? JSON.parse(JSON.stringify(p.chroma)) : {},
+        mask:   p.mask   ? JSON.parse(JSON.stringify(p.mask))   : {},
+      },
+    };
+    const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = 'preset.pmpreset';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  _onPresetLoad() {
+    const input = document.createElement('input');
+    input.type   = 'file';
+    input.accept = '.pmpreset';
+    input.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const preset = JSON.parse(await file.text());
+        if (preset.pmpreset !== 1 || !preset.properties) throw new Error('Invalid preset file');
+        const clip = this._currentClip;
+        if (!clip) return;
+        const pp = preset.properties;
+        this._history.snapshotCommand('Load preset: ' + (preset.name ?? file.name), () => {
+          if (pp.color)  clip.properties.color  = pp.color;
+          if (pp.vfx)    clip.properties.vfx    = pp.vfx;
+          if (pp.chroma) clip.properties.chroma = pp.chroma;
+          if (pp.mask)   clip.properties.mask   = pp.mask;
+        });
+        this._pm.markDirty();
+        this.showClip(clip);
+      } catch (err) {
+        this._showError('Preset load failed: ' + err.message);
+      }
+    }, { once: true });
+    input.click();
   }
 
   _onImportLUT() {
@@ -537,6 +660,9 @@ function injectStyles() {
     .pm-btn-sm.pm-btn-ghost { background:transparent; }
     .pm-insp-error { background:var(--accent-err,#8b1a1a); color:#fff; font-size:0.72rem;
       padding:6px 12px; border-radius:4px; margin:6px; line-height:1.4; }
+
+    /* Preset row */
+    .pm-insp-preset-controls { display:flex; gap:6px; }
   `;
   document.head.appendChild(s);
 }
@@ -573,6 +699,6 @@ function getPropValue(obj, path) {
 function setPropValue(obj, path, val) {
   const keys = path.split('.');
   const last = keys.pop();
-  const target = keys.reduce((o, k) => o[k], obj);
+  const target = keys.reduce((o, k) => { if (o[k] == null) o[k] = {}; return o[k]; }, obj);
   if (target != null) target[last] = val;
 }

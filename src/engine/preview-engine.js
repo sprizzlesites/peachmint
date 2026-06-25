@@ -15,7 +15,7 @@
 
 import { Compositor }                            from './compositor.js';
 import { DecoderPool }                           from './decoder.js';
-import { clipsAtTime, totalDuration, interpolate } from './edl.js';
+import { clipsAtTime, totalDuration, interpolate, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
 import { parseCube, parse3dl }                   from './lut.js';
 
 export class PreviewEngine extends EventTarget {
@@ -144,6 +144,7 @@ export class PreviewEngine extends EventTarget {
     try {
       const bg = this._project.canvas?.background;
       this._compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
+      this._compositor.setTime(time);
 
       const active = clipsAtTime(this._project, time);
       for (const { clip, track } of active) {
@@ -157,6 +158,7 @@ export class PreviewEngine extends EventTarget {
         }
 
         const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+        const outFactor = getTransitionOutFactor(clip, time);
 
         try {
           const dec = await this._decoders.getDecoder(asset);
@@ -166,12 +168,32 @@ export class PreviewEngine extends EventTarget {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
             this._compositor.setActiveLUT(lutTex);
-            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight);
+            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor ?? 1);
           }
         } catch {
           this._compositor.setActiveLUT(null);
           this._compositor.drawSolid([0.2, 0.05, 0.05, 1]);
         }
+      }
+
+      // Render clips that are fading in via a cross-dissolve transition
+      const transIn = transitionClipsAtTime(this._project, time);
+      for (const { clip, track, factor, trStart } of transIn) {
+        if (track.type === 'audio') continue;
+        const asset = this._project.assets.find((a) => a.id === clip.assetId);
+        if (!asset?.storageKey) continue;
+        const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
+        try {
+          const dec = await this._decoders.getDecoder(asset);
+          await dec.seekTo(clipMediaTime);
+          const src = dec.getSource();
+          if (src) {
+            const props = resolveAnimatedProps(clip, time);
+            const lutTex = await this._resolveLUT(props.color?.lut);
+            this._compositor.setActiveLUT(lutTex);
+            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, factor);
+          }
+        } catch {}
       }
     } finally {
       this._rendering = false;
