@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.9 · Autosave + project save/load + undo/redo
+Phase 1 · step 1.10 · Mobile UI shell
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -55,7 +55,12 @@ Phase 1 · step 1.9 · Autosave + project save/load + undo/redo
   - [x] 1.8.2 toolbar.js — export button wired to onExport callback, enabled when project open
   - [x] 1.8.3 shell.js — _showExportDialog() with resolution/fps/bitrate selectors, progress bar + ETA, error display, MP4 download trigger
   - [x] 1.8.4 sw.js bumped to v6, export-engine.js added to APP_SHELL cache
-- [ ] 1.9 Autosave + project save/load + undo/redo
+- [x] 1.9 Autosave + project save/load + undo/redo
+  - [x] 1.9.1 history.clear() on project open/close (prevents stale undo across projects)
+  - [x] 1.9.2 Unsaved indicator: * suffix on project name via .pm-unsaved::after, wired to project:dirty/saved/autosaved
+  - [x] 1.9.3 Inline project rename: double-click project name → editable input (Enter/Esc/blur commit)
+  - [x] 1.9.4 Open project dialog: delete button per row with <dialog> confirmation, fix private storage access
+  - [x] 1.9.5 sw.js bumped to v7
 - [ ] 1.10 Mobile UI shell over the same engine
 
 ### Phase 2 — Pro features (P1)
@@ -84,3 +89,4 @@ Phase 1 · step 1.9 · Autosave + project save/load + undo/redo
 - 2026-06-25 session 4 — did: Phase 1.6 complete — splitClip() in edl.js, resolveAnimatedProps() in preview-engine.js, inspector.js rewritten with keyframe ◆ buttons + keyframe list, timeline.js completed (razor split, cross-track ghost drag, asset-drop-to-lane, trimIn correction, trim-preview seek, keyframe diamond markers, _cmdSplitClip, _cmdAddClipFromAsset), sw.js bumped to v4 · stopped at: end of 1.6 · next: Phase 1.7 Web Audio
 - 2026-06-25 session 5 — did: Phase 1.7 complete — audio-engine.js (AudioContext, AudioBufferSourceNode scheduling, GainNode volume, keyframe automation via AudioParam, buffer cache, async load + latency compensation, stop guard), inspector.js Volume propRow, shell.js AudioEngine wired (play/stop/seek/project events), sw.js bumped to v5 · stopped at: end of 1.7 · next: Phase 1.8 WebCodecs export
 - 2026-06-25 session 6 — did: Phase 1.8 complete — export-engine.js (ExportEngine: OffscreenCanvas frame render, VideoEncoder H.264 AVCC, AudioEncoder AAC via OfflineAudioContext, mp4-muxer ArrayBufferTarget, abort/backpressure, keyframe interpolation), toolbar.js export button wired, shell.js _showExportDialog() (resolution/fps/bitrate UI, progress+ETA, error display, MP4 download), sw.js bumped to v6 · stopped at: end of 1.8 · next: Phase 1.9 autosave + save/load + undo/redo
+- 2026-06-25 session 7 — did: Phase 1.9 complete — shell.js: history.clear() on project open/close, * unsaved indicator (project:dirty/saved/autosaved wired), inline project rename (dblclick name→input), open dialog delete per row (<dialog> confirm, _confirmDelete helper), fixed _storage private access, CSS .pm-unsaved::after + .pm-name-edit + .pm-proj-info + .pm-proj-del + .btn-danger, sw.js bumped to v7 · stopped at: end of 1.9 · next: Phase 1.10 mobile UI shell

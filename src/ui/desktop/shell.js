@@ -115,9 +115,16 @@ class DesktopShell {
     this._pm.addEventListener('project:opened', (e) => this._onProjectOpened(e.detail));
     this._pm.addEventListener('project:recovered', (e) => this._onProjectOpened(e.detail));
     this._pm.addEventListener('project:closed', () => this._onProjectClosed());
-    this._pm.addEventListener('project:saved', () => this._setSaveStatus('Saved'));
-    this._pm.addEventListener('project:autosaved', () => this._setSaveStatus('Auto-saved'));
+    this._pm.addEventListener('project:saved', () => {
+      this._setUnsavedIndicator(false);
+      this._setSaveStatus('Saved');
+    });
+    this._pm.addEventListener('project:autosaved', () => {
+      this._setUnsavedIndicator(false);
+      this._setSaveStatus('Auto-saved');
+    });
     this._pm.addEventListener('project:dirty', () => {
+      this._setUnsavedIndicator(true);
       this._setSaveStatus('Unsaved changes');
       this._timeline?.setProject(this._pm.project);
     });
@@ -134,6 +141,9 @@ class DesktopShell {
     // Transport buttons
     this._bindTransport();
 
+    // Project name rename on double-click
+    this._el.querySelector('#pm-project-name')?.addEventListener('dblclick', () => this._editProjectName());
+
     // Initial state
     if (this._pm.project) {
       this._onProjectOpened(this._pm.project);
@@ -148,6 +158,7 @@ class DesktopShell {
   // ─── Project events ─────────────────────────────────────────────────────────
 
   _onProjectOpened(project) {
+    this._history.clear();
     this._hideStartScreen();
     this._currentTime = 0;
     this._updateTimecode(0);
@@ -156,7 +167,8 @@ class DesktopShell {
     this._timeline?.setProject(project);
     this._inspector?.clear();
     this._toolbar?.setProject(project);
-    this._el.querySelector('#pm-project-name').textContent = project.name ?? 'Untitled';
+    const nameEl = this._el.querySelector('#pm-project-name');
+    if (nameEl) { nameEl.textContent = project.name ?? 'Untitled'; nameEl.title = 'Double-click to rename'; }
 
     // Sync preview engine and canvas aspect ratio to project settings
     this._previewEngine?.setProject(project);
@@ -167,11 +179,14 @@ class DesktopShell {
   }
 
   _onProjectClosed() {
+    this._history.clear();
     this._stop();
     this._previewEngine?.setProject(null);
     this._audioEngine?.setProject(null);
     this._showStartScreen();
-    this._el.querySelector('#pm-project-name').textContent = '';
+    const nameEl = this._el.querySelector('#pm-project-name');
+    if (nameEl) { nameEl.textContent = ''; nameEl.title = ''; }
+    this._setUnsavedIndicator(false);
     this._setSaveStatus('No project open');
   }
 
@@ -286,7 +301,7 @@ class DesktopShell {
   }
 
   _showOpenProjectDialog() {
-    this._pm._storage.listProjects().then((list) => {
+    this._storage.listProjects().then(async (list) => {
       if (!list.length) {
         this._showInfoDialog('No saved projects', 'No projects found. Create a new one to get started.');
         return;
@@ -294,32 +309,59 @@ class DesktopShell {
       const dialog = document.createElement('dialog');
       dialog.setAttribute('aria-modal', 'true');
       dialog.setAttribute('aria-labelledby', 'open-proj-title');
-      const rows = list.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')).map((p) => `
-        <div class="pm-proj-row" data-id="${escHtml(p.id)}" role="button" tabindex="0">
-          <span class="pm-proj-name">${escHtml(p.name ?? 'Untitled')}</span>
-          <span class="pm-proj-date">${formatDate(p.updatedAt)}</span>
-        </div>
-      `).join('');
+      const rows = list
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .map((p) => `
+          <div class="pm-proj-row" data-id="${escHtml(p.id)}">
+            <div class="pm-proj-info" tabindex="0" role="button" data-action="open"
+                 aria-label="Open ${escHtml(p.name ?? 'Untitled')}">
+              <span class="pm-proj-name">${escHtml(p.name ?? 'Untitled')}</span>
+              <span class="pm-proj-date">${formatDate(p.updatedAt ?? p._savedAt)}</span>
+            </div>
+            <button class="pm-proj-del" data-action="delete"
+                    aria-label="Delete ${escHtml(p.name ?? 'Untitled')}" title="Delete project">✕</button>
+          </div>
+        `).join('');
       dialog.innerHTML = `
         <h2 id="open-proj-title" style="margin:0 0 14px;font-size:1rem">Open Project</h2>
-        <div style="max-height:300px;overflow-y:auto">${rows}</div>
+        <div id="op-list" style="max-height:300px;overflow-y:auto">${rows}</div>
         <div style="display:flex;justify-content:flex-end;margin-top:16px">
           <button class="btn-ghost" id="op-cancel">Cancel</button>
         </div>
       `;
       document.body.appendChild(dialog);
       dialog.showModal();
+
       dialog.querySelector('#op-cancel').addEventListener('click', () => { dialog.close(); dialog.remove(); });
+
       dialog.addEventListener('click', async (e) => {
-        const row = e.target.closest('.pm-proj-row');
-        if (!row) return;
-        const id = row.dataset.id;
-        dialog.close(); dialog.remove();
-        await this._pm.openProject(id);
+        const delBtn = e.target.closest('[data-action="delete"]');
+        if (delBtn) {
+          const row = delBtn.closest('.pm-proj-row');
+          if (!row) return;
+          const name = row.querySelector('.pm-proj-name')?.textContent ?? 'project';
+          const confirmed = await confirmDelete(name);
+          if (!confirmed) return;
+          await this._pm.deleteProject(row.dataset.id);
+          row.remove();
+          if (!dialog.querySelector('.pm-proj-row')) {
+            dialog.close(); dialog.remove();
+            this._showInfoDialog('No saved projects', 'All projects deleted. Create a new one to get started.');
+          }
+          return;
+        }
+        const info = e.target.closest('[data-action="open"]');
+        if (info) {
+          const row = info.closest('.pm-proj-row');
+          if (!row) return;
+          dialog.close(); dialog.remove();
+          await this._pm.openProject(row.dataset.id);
+        }
       });
+
       dialog.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') { dialog.close(); dialog.remove(); }
-        if (e.key === 'Enter' && document.activeElement.classList.contains('pm-proj-row')) {
+        if (e.key === 'Enter' && document.activeElement.dataset?.action === 'open') {
           document.activeElement.click();
         }
       });
@@ -502,6 +544,38 @@ class DesktopShell {
   _setSaveStatus(msg) {
     const el = this._el.querySelector('#pm-save-status');
     if (el) el.textContent = msg;
+  }
+
+  _setUnsavedIndicator(dirty) {
+    this._el.querySelector('#pm-project-name')?.classList.toggle('pm-unsaved', dirty);
+  }
+
+  _editProjectName() {
+    const nameEl = this._el.querySelector('#pm-project-name');
+    if (!nameEl || !this._pm.project || nameEl.style.display === 'none') return;
+    const current = this._pm.project.name ?? 'Untitled';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.className = 'pm-name-edit';
+    nameEl.style.display = 'none';
+    nameEl.after(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const newName = input.value.trim() || current;
+      input.remove();
+      nameEl.style.display = '';
+      if (newName !== current) {
+        nameEl.textContent = newName;
+        this._pm.mutate((proj) => { proj.name = newName; });
+      }
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { input.value = current; commit(); }
+    });
   }
 
   _updateTimecode(t) {
@@ -758,11 +832,28 @@ function injectStyles() {
       border-radius:6px; padding:7px 10px; font-size:0.85rem; font-family:var(--font-mono);
       outline:none; }
     .pm-input:focus { border-color:var(--accent-purple); }
-    .pm-proj-row { display:flex; align-items:center; justify-content:space-between;
-      padding:10px 12px; border-radius:6px; cursor:pointer; }
-    .pm-proj-row:hover, .pm-proj-row:focus { background:var(--bg-hover); outline:none; }
-    .pm-proj-name { font-size:0.85rem; }
-    .pm-proj-date { font-family:var(--font-mono); font-size:0.7rem; color:var(--text-dim); }
+    .pm-project-name:not(:empty) { cursor:text; }
+    .pm-project-name.pm-unsaved::after { content:' *'; color:var(--accent-peach); }
+    .pm-name-edit { background:var(--bg-base); border:1px solid var(--accent-purple);
+      color:var(--text-primary); border-radius:4px; padding:2px 6px;
+      font-size:0.8rem; font-family:var(--font-mono); outline:none; max-width:180px; }
+    .pm-proj-row { display:flex; align-items:center; gap:4px; border-radius:6px; padding:2px 4px; }
+    .pm-proj-info { flex:1; display:flex; align-items:center; justify-content:space-between;
+      padding:8px 10px; border-radius:4px; cursor:pointer; gap:12px; }
+    .pm-proj-info:hover, .pm-proj-info:focus { background:var(--bg-hover); outline:none; }
+    .pm-proj-name { font-size:0.85rem; flex:1; min-width:0; white-space:nowrap;
+      overflow:hidden; text-overflow:ellipsis; }
+    .pm-proj-date { font-family:var(--font-mono); font-size:0.7rem; color:var(--text-dim); flex-shrink:0; }
+    .pm-proj-del { background:transparent; border:none; color:var(--text-dim); cursor:pointer;
+      width:24px; height:24px; border-radius:4px; font-size:0.75rem; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center; opacity:0; }
+    .pm-proj-row:hover .pm-proj-del { opacity:1; }
+    .pm-proj-del:hover { color:var(--accent-err); background:rgba(255,85,85,.12); }
+    .pm-proj-del:focus-visible { opacity:1; outline:2px solid var(--accent-purple); outline-offset:2px; }
+    .btn-danger { background:var(--accent-err); border:none; color:#fff; border-radius:var(--radius,6px);
+      padding:8px 20px; font-size:0.85rem; font-weight:700; cursor:pointer; font-family:var(--font-ui); }
+    .btn-danger:hover { background:#cc4444; }
+    .btn-danger:focus-visible { outline:2px solid var(--accent-purple); outline-offset:2px; }
   `;
   document.head.appendChild(s);
 }
@@ -794,4 +885,23 @@ function escHtml(s) {
 function formatDate(iso) {
   if (!iso) return '';
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function confirmDelete(name) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.setAttribute('aria-modal', 'true');
+    d.innerHTML = `
+      <p style="margin:0 0 16px">Delete <strong>${escHtml(name)}</strong>?<br>
+        <span style="font-size:0.8rem;color:var(--text-muted)">This cannot be undone.</span></p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn-ghost" id="cd-keep" autofocus>Keep</button>
+        <button class="btn-danger" id="cd-del">Delete</button>
+      </div>`;
+    document.body.appendChild(d);
+    d.showModal();
+    d.querySelector('#cd-keep').addEventListener('click', () => { d.close(); d.remove(); resolve(false); });
+    d.querySelector('#cd-del').addEventListener('click', () => { d.close(); d.remove(); resolve(true); });
+    d.addEventListener('keydown', (e) => { if (e.key === 'Escape') { d.close(); d.remove(); resolve(false); } });
+  });
 }
