@@ -81,16 +81,17 @@ class DesktopShell {
     // Mount child panels
     this._toolbar = new Toolbar(this._el.querySelector('#pm-toolbar'), {
       pm: this._pm, history: this._history,
-      onAddTrack: (type) => this._addTrack(type),
-      onUndo: () => this._history.undo(),
-      onRedo: () => this._history.redo(),
+      onAddTrack:   (type) => this._addTrack(type),
+      onUndo:       () => this._history.undo(),
+      onRedo:       () => this._history.redo(),
       onNewProject: () => this._showNewProjectDialog(),
       onOpenProject: () => this._showOpenProjectDialog(),
       onSaveProject: () => this._pm.saveProject(),
-      onZoomIn: () => this._timeline?.zoomIn(),
-      onZoomOut: () => this._timeline?.zoomOut(),
+      onZoomIn:     () => this._timeline?.zoomIn(),
+      onZoomOut:    () => this._timeline?.zoomOut(),
       onTogglePlay: () => this._togglePlay(),
       onToolChange: (tool) => this._timeline?.setTool(tool),
+      onExport:     () => this._showExportDialog(),
     });
 
     this._library = new MediaLibrary(this._el.querySelector('#pm-media-library'), {
@@ -332,6 +333,133 @@ class DesktopShell {
     document.body.appendChild(d);
     d.showModal();
     d.querySelector('button').addEventListener('click', () => { d.close(); d.remove(); });
+  }
+
+  _showExportDialog() {
+    if (!this._pm.project) return;
+    const project = this._pm.project;
+    const w = project.canvas.width, h = project.canvas.height, f = project.canvas.fps ?? 30;
+
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'ex-title');
+    dialog.innerHTML = `
+      <h2 id="ex-title" style="margin:0 0 16px;font-size:1rem">Export Video</h2>
+
+      <label class="pm-dlg-label">Resolution
+        <select id="ex-res" class="pm-input" style="width:100%">
+          <option value="match">Match project — ${w}×${h}</option>
+          <option value="1920x1080">1920×1080 (1080p)</option>
+          <option value="3840x2160">3840×2160 (4K)</option>
+          <option value="1280x720">1280×720 (720p)</option>
+        </select>
+      </label>
+
+      <label class="pm-dlg-label" style="margin-top:10px">Frame Rate
+        <select id="ex-fps" class="pm-input" style="width:100%">
+          <option value="match">Match project — ${f} fps</option>
+          <option value="24">24 fps (cinematic)</option>
+          <option value="30">30 fps</option>
+          <option value="60">60 fps</option>
+        </select>
+      </label>
+
+      <label class="pm-dlg-label" style="margin-top:10px">Video Quality
+        <select id="ex-vbr" class="pm-input" style="width:100%">
+          <option value="4000000">4 Mbps — web / social</option>
+          <option value="8000000" selected>8 Mbps — standard</option>
+          <option value="16000000">16 Mbps — high</option>
+          <option value="32000000">32 Mbps — ultra</option>
+        </select>
+      </label>
+
+      <label class="pm-dlg-label" style="margin-top:10px;flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="ex-audio" checked> Include audio tracks
+      </label>
+
+      <div id="ex-progress-wrap" style="display:none;margin-top:16px">
+        <div style="background:var(--bg-base);border-radius:6px;overflow:hidden;height:6px">
+          <div id="ex-pbar" style="height:100%;width:0%;background:var(--accent-peach);transition:width .15s ease"></div>
+        </div>
+        <div id="ex-plabel" style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted);margin-top:6px">Preparing…</div>
+      </div>
+
+      <div id="ex-error" style="display:none;background:#2d1010;border:1px solid #ff5555;border-radius:6px;padding:8px 12px;font-size:0.8rem;color:#ff8080;margin-top:12px"></div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
+        <button class="btn-ghost" id="ex-cancel">Cancel</button>
+        <button class="btn-primary" id="ex-start" autofocus>Export MP4</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+
+    let exportEngine = null;
+    const startBtn    = dialog.querySelector('#ex-start');
+    const cancelBtn   = dialog.querySelector('#ex-cancel');
+    const progressWrap = dialog.querySelector('#ex-progress-wrap');
+    const pbar        = dialog.querySelector('#ex-pbar');
+    const plabel      = dialog.querySelector('#ex-plabel');
+    const errorBox    = dialog.querySelector('#ex-error');
+
+    const closeDialog = () => { dialog.close(); dialog.remove(); };
+
+    cancelBtn.addEventListener('click', () => { exportEngine?.abort(); closeDialog(); });
+
+    startBtn.addEventListener('click', async () => {
+      // Parse settings
+      const resVal  = dialog.querySelector('#ex-res').value;
+      const fpsVal  = dialog.querySelector('#ex-fps').value;
+      const vbrVal  = parseInt(dialog.querySelector('#ex-vbr').value, 10);
+      const inclAud = dialog.querySelector('#ex-audio').checked;
+
+      let width = w, height = h;
+      if (resVal !== 'match') [width, height] = resVal.split('x').map(Number);
+      const fps = fpsVal === 'match' ? f : parseInt(fpsVal, 10);
+
+      startBtn.disabled = true;
+      startBtn.textContent = 'Exporting…';
+      progressWrap.style.display = 'block';
+      errorBox.style.display = 'none';
+
+      const t0 = Date.now();
+      try {
+        const { ExportEngine } = await import('../../engine/export-engine.js');
+        exportEngine = new ExportEngine({ storage: this._storage });
+
+        const buffer = await exportEngine.export(
+          project,
+          { width, height, fps, videoBitrate: vbrVal, includeAudio: inclAud },
+          (progress) => {
+            pbar.style.width = `${Math.round(progress * 100)}%`;
+            const elapsed = (Date.now() - t0) / 1000;
+            const eta     = progress > 0.05 ? (elapsed / progress - elapsed) : null;
+            plabel.textContent = `${Math.round(progress * 100)}% — ${formatElapsed(elapsed)}${eta ? ` · ~${formatElapsed(eta)} remaining` : ''}`;
+          },
+        );
+
+        // Download the resulting MP4
+        const blob = new Blob([buffer], { type: 'video/mp4' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = `${(project.name ?? 'export').replace(/[^a-z0-9_-]/gi, '_')}.mp4`;
+        a.click();
+        URL.revokeObjectURL(url);
+        closeDialog();
+
+      } catch (err) {
+        if (err.message === 'Export cancelled') { closeDialog(); return; }
+        errorBox.textContent = `Export failed: ${err.message}`;
+        errorBox.style.display = 'block';
+        startBtn.disabled = false;
+        startBtn.textContent = 'Retry Export';
+      }
+    });
+
+    dialog.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { exportEngine?.abort(); closeDialog(); }
+    });
   }
 
   // ─── Start screen ─────────────────────────────────────────────────────────────
@@ -651,6 +779,13 @@ function formatTimecode(secs, fps = 30) {
 }
 
 function pad(n) { return String(n).padStart(2, '0'); }
+
+function formatElapsed(secs) {
+  if (!isFinite(secs) || secs < 0) return '0s';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
 
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

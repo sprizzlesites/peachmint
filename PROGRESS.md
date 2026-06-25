@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.8 · Render targets + custom ratio + WebCodecs export (mp4-muxer)
+Phase 1 · step 1.9 · Autosave + project save/load + undo/redo
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -50,7 +50,11 @@ Phase 1 · step 1.8 · Render targets + custom ratio + WebCodecs export (mp4-mux
   - [x] 1.7.2 Volume keyframe automation via AudioParam.linearRampToValueAtTime / setValueAtTime
   - [x] 1.7.3 shell.js — AudioEngine wired to play/stop/seek/project open/close
   - [x] 1.7.4 inspector.js — Volume propRow (0–2) with keyframe ◆ button
-- [ ] 1.8 Render targets + custom ratio + WebCodecs export (mp4-muxer)
+- [x] 1.8 Render targets + custom ratio + WebCodecs export (mp4-muxer)
+  - [x] 1.8.1 src/engine/export-engine.js — ExportEngine (OffscreenCanvas + Compositor + DecoderPool, VideoEncoder H.264, AudioEncoder AAC, mp4-muxer ArrayBufferTarget)
+  - [x] 1.8.2 toolbar.js — export button wired to onExport callback, enabled when project open
+  - [x] 1.8.3 shell.js — _showExportDialog() with resolution/fps/bitrate selectors, progress bar + ETA, error display, MP4 download trigger
+  - [x] 1.8.4 sw.js bumped to v6, export-engine.js added to APP_SHELL cache
 - [ ] 1.9 Autosave + project save/load + undo/redo
 - [ ] 1.10 Mobile UI shell over the same engine
 
@@ -79,3 +83,4 @@ Phase 1 · step 1.8 · Render targets + custom ratio + WebCodecs export (mp4-mux
 - 2026-06-25 session 3 — did: Phase 1.5 complete — compositor.js (WebGL2 pipeline), decoder.js (ClipDecoder + DecoderPool), preview-engine.js (RAF loop, scrub/play modes), shell.js updated (PreviewEngine wired, project:dirty → timeline refresh, RAF-based play), media-library.js updated (full file import: picker + drag-drop, OPFS write, probe, Add to Timeline), app-shell.js async bug fixed · stopped at: end of 1.5 · next: Phase 1.6 Import / trim / split / reorder
 - 2026-06-25 session 4 — did: Phase 1.6 complete — splitClip() in edl.js, resolveAnimatedProps() in preview-engine.js, inspector.js rewritten with keyframe ◆ buttons + keyframe list, timeline.js completed (razor split, cross-track ghost drag, asset-drop-to-lane, trimIn correction, trim-preview seek, keyframe diamond markers, _cmdSplitClip, _cmdAddClipFromAsset), sw.js bumped to v4 · stopped at: end of 1.6 · next: Phase 1.7 Web Audio
 - 2026-06-25 session 5 — did: Phase 1.7 complete — audio-engine.js (AudioContext, AudioBufferSourceNode scheduling, GainNode volume, keyframe automation via AudioParam, buffer cache, async load + latency compensation, stop guard), inspector.js Volume propRow, shell.js AudioEngine wired (play/stop/seek/project events), sw.js bumped to v5 · stopped at: end of 1.7 · next: Phase 1.8 WebCodecs export
+- 2026-06-25 session 6 — did: Phase 1.8 complete — export-engine.js (ExportEngine: OffscreenCanvas frame render, VideoEncoder H.264 AVCC, AudioEncoder AAC via OfflineAudioContext, mp4-muxer ArrayBufferTarget, abort/backpressure, keyframe interpolation), toolbar.js export button wired, shell.js _showExportDialog() (resolution/fps/bitrate UI, progress+ETA, error display, MP4 download), sw.js bumped to v6 · stopped at: end of 1.8 · next: Phase 1.9 autosave + save/load + undo/redo

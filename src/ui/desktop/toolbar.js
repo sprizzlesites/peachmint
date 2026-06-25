@@ -8,12 +8,12 @@
 export class Toolbar {
   constructor(container, { pm, history, onAddTrack, onUndo, onRedo,
     onNewProject, onOpenProject, onSaveProject,
-    onZoomIn, onZoomOut, onTogglePlay, onToolChange }) {
+    onZoomIn, onZoomOut, onTogglePlay, onToolChange, onExport }) {
     this._el = container;
     this._pm = pm;
     this._history = history;
     this._cbs = { onAddTrack, onUndo, onRedo, onNewProject, onOpenProject,
-      onSaveProject, onZoomIn, onZoomOut, onTogglePlay, onToolChange };
+      onSaveProject, onZoomIn, onZoomOut, onTogglePlay, onToolChange, onExport };
     this._activeTool = 'pointer';
     this._isPlaying = false;
     this._mount();
@@ -63,9 +63,9 @@ export class Toolbar {
         </div>
         <div class="pm-tb-sep" role="separator"></div>
 
-        <!-- Export (stub — Phase 1.8) -->
+        <!-- Export -->
         <div class="pm-tb-group" role="group" aria-label="Export">
-          <button class="pm-tb-btn pm-tb-export" id="tb-export" title="Export video (Phase 1.8)" aria-label="Export video" disabled>
+          <button class="pm-tb-btn pm-tb-export" id="tb-export" title="Export to MP4 (WebCodecs)" aria-label="Export video" disabled>
             ⬇ Export
           </button>
         </div>
@@ -84,6 +84,7 @@ export class Toolbar {
     el.querySelector('#tb-redo')?.addEventListener('click', () => cbs.onRedo?.());
     el.querySelector('#tb-zoom-in')?.addEventListener('click', () => cbs.onZoomIn?.());
     el.querySelector('#tb-zoom-out')?.addEventListener('click', () => cbs.onZoomOut?.());
+    el.querySelector('#tb-export')?.addEventListener('click', () => cbs.onExport?.());
 
     el.querySelectorAll('.pm-tb-tool').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -105,11 +106,11 @@ export class Toolbar {
   // ─── Public update methods ────────────────────────────────────────────────────
 
   setProject(project) {
-    // Enable/disable buttons based on project state
     const hasPrj = !!project;
     this._el.querySelector('#tb-save')?.toggleAttribute('disabled', !hasPrj);
     this._el.querySelector('#tb-zoom-in')?.toggleAttribute('disabled', !hasPrj);
     this._el.querySelector('#tb-zoom-out')?.toggleAttribute('disabled', !hasPrj);
+    this._el.querySelector('#tb-export')?.toggleAttribute('disabled', !hasPrj);
   }
 
   updateHistory({ canUndo, canRedo, undoLabel, redoLabel }) {
