@@ -108,6 +108,7 @@ class DesktopShell {
 
     this._inspector = new Inspector(this._el.querySelector('#pm-inspector'), {
       pm: this._pm, history: this._history,
+      storage: this._storage,
       getCurrentTime: () => this._currentTime,
     });
 

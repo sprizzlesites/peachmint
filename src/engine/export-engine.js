@@ -15,6 +15,7 @@
 import { Compositor }              from './compositor.js';
 import { DecoderPool }             from './decoder.js';
 import { clipsAtTime, totalDuration } from './edl.js';
+import { parseCube, parse3dl }     from './lut.js';
 
 const MP4_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
 
@@ -112,7 +113,8 @@ export class ExportEngine {
     const offscreen  = new OffscreenCanvas(width, height);
     const compositor = new Compositor(offscreen);
     compositor.init();
-    const decoders = new DecoderPool(this._storage);
+    const decoders  = new DecoderPool(this._storage);
+    const lutCache  = new Map(); // assetId → WebGLTexture (owned by compositor)
 
     const duration      = Math.max(totalDuration(project), 0.01);
     const frameDuration = 1 / fps;
@@ -127,7 +129,7 @@ export class ExportEngine {
         if (videoError)    throw videoError;
 
         const time = i * frameDuration;
-        await this._renderFrame(compositor, decoders, project, time);
+        await this._renderFrame(compositor, decoders, project, time, lutCache);
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
@@ -159,6 +161,7 @@ export class ExportEngine {
       muxer.finalize();
 
     } finally {
+      // LUT textures are owned by compositor; dispose it first to release GL objects
       compositor.dispose();
       decoders.dispose();
     }
@@ -169,7 +172,7 @@ export class ExportEngine {
 
   // ─── Video frame rendering ────────────────────────────────────────────────────
 
-  async _renderFrame(compositor, decoders, project, time) {
+  async _renderFrame(compositor, decoders, project, time, lutCache) {
     const bg = project.canvas?.background;
     compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
 
@@ -179,6 +182,7 @@ export class ExportEngine {
 
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset?.storageKey) {
+        compositor.setActiveLUT(null);
         compositor.drawSolid([0.15, 0.04, 0.04, 1]);
         continue;
       }
@@ -189,9 +193,15 @@ export class ExportEngine {
         await dec.seekTo(clipTime);
         const src = dec.getSource();
         if (src) {
-          compositor.drawClip(src, resolveProps(clip, time), dec.naturalWidth, dec.naturalHeight);
+          const props  = resolveProps(clip, time);
+          const lutTex = lutCache
+            ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
+            : null;
+          compositor.setActiveLUT(lutTex);
+          compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight);
         }
       } catch {
+        compositor.setActiveLUT(null);
         compositor.drawSolid([0.2, 0.05, 0.05, 1]);
       }
     }
@@ -285,6 +295,22 @@ export class ExportEngine {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function resolveLUT(assetId, project, compositor, storage, cache) {
+  if (!assetId) return null;
+  if (cache.has(assetId)) return cache.get(assetId);
+  const asset = project.assets.find((a) => a.id === assetId && a.type === 'lut');
+  if (!asset?.storageKey) return null;
+  try {
+    const ab   = await storage.readMedia(asset.storageKey);
+    if (!ab) return null;
+    const text   = new TextDecoder().decode(ab instanceof ArrayBuffer ? ab : ab.buffer);
+    const parsed = asset.lutFormat === '3dl' ? parse3dl(text) : parseCube(text);
+    const tex    = compositor.uploadLUT(parsed.data, parsed.size);
+    cache.set(assetId, tex);
+    return tex;
+  } catch { cache.set(assetId, null); return null; }
+}
 
 /** Resolve clip properties at a given project time, applying keyframe interpolation. */
 function resolveProps(clip, time) {

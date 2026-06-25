@@ -16,6 +16,7 @@
 import { Compositor }                            from './compositor.js';
 import { DecoderPool }                           from './decoder.js';
 import { clipsAtTime, totalDuration, interpolate } from './edl.js';
+import { parseCube, parse3dl }                   from './lut.js';
 
 export class PreviewEngine extends EventTarget {
   /**
@@ -35,8 +36,9 @@ export class PreviewEngine extends EventTarget {
     this._playStartTime = 0;
     this._currentTime   = 0;
 
-    this._rendering = false;
-    this._ready     = false;
+    this._rendering  = false;
+    this._ready      = false;
+    this._lutTexCache = new Map(); // assetId → WebGLTexture
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -50,14 +52,21 @@ export class PreviewEngine extends EventTarget {
 
   dispose() {
     this.stop();
+    this._clearLUTs();
     this._decoders?.dispose();
     this._compositor.dispose();
     this._ready = false;
   }
 
+  _clearLUTs() {
+    for (const tex of this._lutTexCache.values()) this._compositor.disposeLUT(tex);
+    this._lutTexCache.clear();
+  }
+
   // ─── Project ──────────────────────────────────────────────────────────────────
 
   setProject(project) {
+    this._clearLUTs();
     this._project = project;
     if (project) {
       const { width, height } = project.canvas;
@@ -142,6 +151,7 @@ export class PreviewEngine extends EventTarget {
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
         if (!asset || !asset.storageKey) {
+          this._compositor.setActiveLUT(null);
           this._compositor.drawSolid([0.15, 0.04, 0.04, 1]);
           continue;
         }
@@ -153,16 +163,38 @@ export class PreviewEngine extends EventTarget {
           await dec.seekTo(clipTime);
           const src = dec.getSource();
           if (src) {
-            // Use interpolated (keyframed) props if keyframes exist
             const props = resolveAnimatedProps(clip, time);
+            const lutTex = await this._resolveLUT(props.color?.lut);
+            this._compositor.setActiveLUT(lutTex);
             this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight);
           }
         } catch {
+          this._compositor.setActiveLUT(null);
           this._compositor.drawSolid([0.2, 0.05, 0.05, 1]);
         }
       }
     } finally {
       this._rendering = false;
+    }
+  }
+
+  async _resolveLUT(assetId) {
+    if (!assetId || !this._project) return null;
+    if (this._lutTexCache.has(assetId)) return this._lutTexCache.get(assetId);
+    const asset = this._project.assets.find((a) => a.id === assetId && a.type === 'lut');
+    if (!asset?.storageKey) return null;
+    try {
+      const ab   = await this._storage.readMedia(asset.storageKey);
+      if (!ab) return null;
+      const text   = new TextDecoder().decode(ab instanceof ArrayBuffer ? ab : ab.buffer);
+      const parsed = asset.lutFormat === '3dl' ? parse3dl(text) : parseCube(text);
+      const tex    = this._compositor.uploadLUT(parsed.data, parsed.size);
+      this._lutTexCache.set(assetId, tex);
+      return tex;
+    } catch (e) {
+      console.warn('LUT load failed:', e);
+      this._lutTexCache.set(assetId, null); // cache failure to avoid repeated attempts
+      return null;
     }
   }
 

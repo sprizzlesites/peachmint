@@ -5,17 +5,19 @@
  * Phase 1.6: keyframe add/delete per property, keyframe list, clip name display.
  */
 
-import { setKeyframe, removeKeyframe } from '../../engine/edl.js';
+import { setKeyframe, removeKeyframe }   from '../../engine/edl.js';
+import { parseCube, parse3dl, detectLUTFormat } from '../../engine/lut.js';
 
 export class Inspector {
   /**
    * @param {HTMLElement} container
-   * @param {{ pm, history, getCurrentTime }} opts
+   * @param {{ pm, history, getCurrentTime, storage }} opts
    */
-  constructor(container, { pm, history, getCurrentTime }) {
+  constructor(container, { pm, history, getCurrentTime, storage }) {
     this._el = container;
     this._pm = pm;
     this._history = history;
+    this._storage = storage ?? null;
     this._getCurrentTime = getCurrentTime ?? (() => 0);
     this._currentClip = null;
     this._mount();
@@ -96,6 +98,7 @@ export class Inspector {
         ${propRow('Saturation',  'color.saturation',  p.color?.saturation  ?? 0, -1, 1,  0.01, hasKF('color.saturation'))}
         ${propRow('Temperature', 'color.temperature', p.color?.temperature ?? 0, -1, 1,  0.01, hasKF('color.temperature'))}
         ${propRow('Tint',        'color.tint',        p.color?.tint        ?? 0, -1, 1,  0.01, hasKF('color.tint'))}
+        ${lutRow(p.color?.lut, this._pm.project?.assets)}
       </div>
 
       <div class="pm-insp-section">
@@ -118,6 +121,10 @@ export class Inspector {
     this._el.querySelectorAll('.pm-insp-kf-del').forEach((btn) => {
       btn.addEventListener('click', () => this._onDeleteKeyframe(btn.dataset.prop, parseFloat(btn.dataset.time)));
     });
+
+    // Wire LUT buttons
+    this._el.querySelector('#pm-insp-lut-import')?.addEventListener('click', () => this._onImportLUT());
+    this._el.querySelector('#pm-insp-lut-clear')?.addEventListener('click',  () => this._onClearLUT());
   }
 
   showTrack(track) {
@@ -199,6 +206,66 @@ export class Inspector {
     });
   }
 
+  _onImportLUT() {
+    if (!this._currentClip || !this._pm.project || !this._storage) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.cube,.3dl';
+    input.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (file) await this._ingestLUT(file);
+    }, { once: true });
+    input.click();
+  }
+
+  async _ingestLUT(file) {
+    const clip    = this._currentClip;
+    const project = this._pm.project;
+    if (!clip || !project) return;
+    try {
+      const fmt = detectLUTFormat(file.name);
+      if (!fmt) throw new Error('Unsupported file type — use .cube or .3dl');
+      const text   = await file.text();
+      const parsed = fmt === '3dl' ? parse3dl(text) : parseCube(text);
+
+      const enc        = new TextEncoder();
+      const storageKey = await this._storage.writeMedia('lut_' + file.name, enc.encode(text).buffer);
+      const id         = 'lut' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      const asset      = { id, name: file.name, type: 'lut', storageKey, lutFormat: fmt, lutSize: parsed.size };
+
+      this._history.snapshotCommand('Import LUT: ' + file.name, () => {
+        project.assets.push(asset);
+        if (!clip.properties.color) clip.properties.color = {};
+        clip.properties.color.lut = id;
+      });
+      this._pm.markDirty();
+      this.showClip(clip);
+    } catch (e) {
+      this._showError('LUT import failed: ' + e.message);
+    }
+  }
+
+  _onClearLUT() {
+    const clip    = this._currentClip;
+    const project = this._pm.project;
+    if (!clip || !project) return;
+    this._history.snapshotCommand('Clear LUT', () => {
+      if (clip.properties.color) delete clip.properties.color.lut;
+    });
+    this._pm.markDirty();
+    this.showClip(clip);
+  }
+
+  _showError(msg) {
+    const body = this._el.querySelector('#pm-insp-body');
+    if (!body) return;
+    const err = document.createElement('div');
+    err.className = 'pm-insp-error';
+    err.textContent = msg;
+    body.prepend(err);
+    setTimeout(() => err.remove(), 5000);
+  }
+
   _refreshKfList(clip) {
     const el = this._el.querySelector('#pm-insp-kf-list');
     if (!el) return;
@@ -239,6 +306,21 @@ function propRow(label, path, value, min, max, step, hasKF) {
                value="${Number(value).toFixed(3)}"
                min="${min}" max="${max}" step="${step}"
                aria-label="${escHtml(label)}">
+      </div>
+    </div>
+  `;
+}
+
+function lutRow(lutId, assets) {
+  const lutAsset = lutId ? assets?.find((a) => a.id === lutId) : null;
+  const name = lutAsset ? escHtml(lutAsset.name) : 'None';
+  return `
+    <div class="pm-insp-row pm-insp-lut-row">
+      <span class="pm-insp-row-label">LUT</span>
+      <div class="pm-insp-lut-controls">
+        <span class="pm-insp-lut-name" title="${lutAsset ? escHtml(lutAsset.name) : ''}">${name}</span>
+        <button class="pm-btn-sm" id="pm-insp-lut-import">Import…</button>
+        ${lutAsset ? `<button class="pm-btn-sm pm-btn-ghost" id="pm-insp-lut-clear">Clear</button>` : ''}
       </div>
     </div>
   `;
@@ -324,6 +406,18 @@ function injectStyles() {
     .pm-insp-kf-del { background:transparent; border:none; color:var(--text-dim); cursor:pointer;
       font-size:0.65rem; padding:0 2px; border-radius:2px; }
     .pm-insp-kf-del:hover { background:var(--accent-err); color:#fff; }
+
+    /* LUT row */
+    .pm-insp-lut-row { flex-direction:column; align-items:flex-start; gap:4px; padding:6px 12px; }
+    .pm-insp-lut-controls { display:flex; align-items:center; gap:6px; width:100%; }
+    .pm-insp-lut-name { font-family:var(--font-mono); font-size:0.65rem; color:var(--text-muted);
+      flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:110px; }
+    .pm-btn-sm { font-size:0.68rem; padding:2px 8px; border-radius:4px; cursor:pointer;
+      background:var(--bg-ui,#2a2a3a); border:1px solid var(--border); color:var(--text-primary); }
+    .pm-btn-sm:hover { border-color:var(--accent-peach); color:var(--accent-peach); }
+    .pm-btn-sm.pm-btn-ghost { background:transparent; }
+    .pm-insp-error { background:var(--accent-err,#8b1a1a); color:#fff; font-size:0.72rem;
+      padding:6px 12px; border-radius:4px; margin:6px; line-height:1.4; }
   `;
   document.head.appendChild(s);
 }

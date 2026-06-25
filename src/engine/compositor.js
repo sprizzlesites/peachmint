@@ -28,8 +28,11 @@ void main() {
 
 const FRAG = `#version 300 es
 precision highp float;
+precision highp sampler3D;
 in vec2 v_uv;
 uniform sampler2D u_tex;
+uniform sampler3D u_lut;
+uniform int       u_lut_enabled;
 uniform float u_opacity;
 uniform float u_exposure;    // EV shift: 0 = no change
 uniform float u_contrast;    // -1..1: 0 = no change
@@ -56,6 +59,8 @@ void main() {
   // Tint (G shift)
   c.g = clamp(c.g - u_tint * 0.08, 0.0, 1.0);
   c = clamp(c, 0.0, 1.0);
+  // 3D LUT (applied after all other corrections)
+  if (u_lut_enabled != 0) c = texture(u_lut, c).rgb;
   fragColor = vec4(c, s.a * u_opacity);
 }`;
 
@@ -71,6 +76,8 @@ export class Compositor {
     this._program = null;
     this._quadBuf = null;
     this._texture = null;
+    this._dummyLUT = null;
+    this._activeLUT = null;
     this._uniforms = {};
     this._canvasW = 0;
     this._canvasH = 0;
@@ -115,6 +122,8 @@ export class Compositor {
     this._uniforms = {
       xform:       gl.getUniformLocation(p, 'u_xform'),
       tex:         gl.getUniformLocation(p, 'u_tex'),
+      lut:         gl.getUniformLocation(p, 'u_lut'),
+      lutEnabled:  gl.getUniformLocation(p, 'u_lut_enabled'),
       opacity:     gl.getUniformLocation(p, 'u_opacity'),
       exposure:    gl.getUniformLocation(p, 'u_exposure'),
       contrast:    gl.getUniformLocation(p, 'u_contrast'),
@@ -122,6 +131,19 @@ export class Compositor {
       temperature: gl.getUniformLocation(p, 'u_temperature'),
       tint:        gl.getUniformLocation(p, 'u_tint'),
     };
+
+    // Dummy 1×1×1 LUT bound to unit 1 so the sampler3D is always valid
+    this._dummyLUT = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, this._dummyLUT);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    gl.uniform1i(this._uniforms.lut, 1);
+    gl.uniform1i(this._uniforms.lutEnabled, 0);
 
     // Enable alpha blending (porter-duff over)
     gl.enable(gl.BLEND);
@@ -174,7 +196,8 @@ export class Compositor {
     const gl = this._gl;
     const { u } = this;
 
-    // Upload frame to texture
+    // Upload frame to texture unit 0
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._texture);
     try {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
@@ -182,10 +205,13 @@ export class Compositor {
       // Source may not be ready (video not seeked) — skip this frame
       return;
     }
-
-    // Bind texture unit 0
-    gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(this._uniforms.tex, 0);
+
+    // Bind LUT to texture unit 1
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, this._activeLUT ?? this._dummyLUT);
+    gl.uniform1i(this._uniforms.lut, 1);
+    gl.uniform1i(this._uniforms.lutEnabled, this._activeLUT ? 1 : 0);
 
     // Set color/compositing uniforms
     const col = props?.color ?? {};
@@ -219,10 +245,14 @@ export class Compositor {
       Math.round(rgba[2] * 255),
       Math.round(rgba[3] * 255),
     ]);
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(this._uniforms.tex, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, this._dummyLUT);
+    gl.uniform1i(this._uniforms.lut, 1);
+    gl.uniform1i(this._uniforms.lutEnabled, 0);
     gl.uniform1f(this._uniforms.opacity, 1);
     gl.uniform1f(this._uniforms.exposure, 0);
     gl.uniform1f(this._uniforms.contrast, 0);
@@ -235,12 +265,57 @@ export class Compositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
+  // ─── LUT API ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Upload a parsed LUT to a new WebGL TEXTURE_3D and return the texture handle.
+   * Caller owns the texture; dispose with disposeLUT() when done.
+   *
+   * @param {Float32Array} floatData — N³×3 floats in 0..1 range (R-fastest order)
+   * @param {number}       size      — cube dimension N
+   * @returns {WebGLTexture}
+   */
+  uploadLUT(floatData, size) {
+    if (!this._ready) throw new Error('Compositor not initialised');
+    const gl = this._gl;
+    const n3 = size * size * size;
+    const rgba = new Uint8Array(n3 * 4);
+    for (let i = 0; i < n3; i++) {
+      rgba[i * 4]     = Math.round(Math.min(1, Math.max(0, floatData[i * 3]))     * 255);
+      rgba[i * 4 + 1] = Math.round(Math.min(1, Math.max(0, floatData[i * 3 + 1])) * 255);
+      rgba[i * 4 + 2] = Math.round(Math.min(1, Math.max(0, floatData[i * 3 + 2])) * 255);
+      rgba[i * 4 + 3] = 255;
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, size, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    return tex;
+  }
+
+  /** Set the active LUT texture for subsequent drawClip() calls. Pass null to disable. */
+  setActiveLUT(tex) {
+    this._activeLUT = tex ?? null;
+  }
+
+  /** Delete a LUT texture created by uploadLUT(). Clears activeLUT if it matches. */
+  disposeLUT(tex) {
+    if (!tex || !this._gl) return;
+    if (this._activeLUT === tex) this._activeLUT = null;
+    this._gl.deleteTexture(tex);
+  }
+
   get isReady() { return this._ready; }
 
   dispose() {
     if (!this._gl) return;
     const gl = this._gl;
     gl.deleteTexture(this._texture);
+    if (this._dummyLUT) gl.deleteTexture(this._dummyLUT);
     gl.deleteBuffer(this._quadBuf);
     gl.deleteProgram(this._program);
     this._ready = false;
