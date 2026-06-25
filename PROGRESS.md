@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 0 · step 0.3 · implement storage layer (OPFS + IndexedDB + persist) round-trip test
+Phase 1 · step 1.4 · EDL model + multitrack timeline UI (desktop first)
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -19,11 +19,11 @@ Phase 0 · step 0.3 · implement storage layer (OPFS + IndexedDB + persist) roun
   - [x] 0.2.6 src/ui/app-shell.js (shell router desktop/mobile)
   - [x] 0.2.7 DEPENDENCIES.md
   - [x] 0.2.8 LICENSE, NOTICE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md
-- [ ] 0.3 Storage layer (OPFS + IndexedDB + persist) round-trip test
-  - [ ] 0.3.1 src/engine/storage.js (OPFS + IndexedDB abstraction)
-  - [ ] 0.3.2 src/engine/project.js (project data model, autosave stub)
-  - [ ] 0.3.3 src/engine/edl.js (EDL schema, keyframe model)
-  - [ ] 0.3.4 Storage round-trip smoke test visible in capability panel
+- [x] 0.3 Storage layer (OPFS + IndexedDB + persist) round-trip test
+  - [x] 0.3.1 src/engine/storage.js (OPFS + IndexedDB abstraction)
+  - [x] 0.3.2 src/engine/project.js (project data model, autosave stub)
+  - [x] 0.3.3 src/engine/edl.js (EDL schema, keyframe model)
+  - [x] 0.3.4 Storage round-trip smoke test in StorageLayer.selfTest() / capability panel
 
 ### Phase 1 — Playable core (MVP / P0)
 - [ ] 1.4 EDL model + multitrack timeline UI (desktop)
@@ -54,4 +54,4 @@ Phase 0 · step 0.3 · implement storage layer (OPFS + IndexedDB + persist) roun
 - Fonts/LUTs: No bundled fonts (user-supplied); no bundled LUTs; open format for community packs
 
 ## Session log (append one entry per working session, newest at bottom)
-- 2026-06-25 session 1 — did: Phase 0 foundations (PROGRESS.md, ARCHITECTURE.md, index.html, manifest.json, sw.js, capabilities.js, app-shell.js, capability-panel.js, DEPENDENCIES.md, LICENSE, OSS docs) · stopped at: start of 0.3 storage layer · next: src/engine/storage.js, project.js, edl.js, storage round-trip test in capability panel
+- 2026-06-25 session 1 — did: Phase 0 complete — ARCHITECTURE.md, PROGRESS.md, index.html, manifest.json, sw.js, capabilities.js, storage.js, project.js, edl.js, history.js, app-shell.js, capability-panel.js, all OSS docs — committed + pushed · stopped at: end of Phase 0 · next: Phase 1.4 EDL model + multitrack timeline UI (desktop)
