@@ -10,6 +10,7 @@ import { Toolbar } from './toolbar.js';
 import { Inspector } from './inspector.js';
 import { MediaLibrary } from './media-library.js';
 import { PreviewEngine } from '../../engine/preview-engine.js';
+import { AudioEngine }   from '../../engine/audio-engine.js';
 import { addTrack, removeClip, totalDuration } from '../../engine/edl.js';
 
 /** Called from app-shell.js to mount the desktop UI into `container`. */
@@ -38,6 +39,7 @@ class DesktopShell {
     this._inspector = null;
     this._library = null;
     this._previewEngine = null;
+    this._audioEngine = null;
 
     this._currentTime = 0;
     this._isPlaying = false;
@@ -63,10 +65,15 @@ class DesktopShell {
     this._previewEngine.addEventListener('preview:ended', () => {
       this._isPlaying = false;
       this._toolbar?.setPlayState(false);
+      this._audioEngine?.stop();
       this._currentTime = 0;
       this._updateTimecode(0);
       this._timeline?.seekTo(0);
     });
+
+    // Initialize audio engine
+    this._audioEngine = new AudioEngine({ storage: this._storage });
+    this._audioEngine.init();
 
     // Bind the resize handle for timeline height
     this._bindTlResize();
@@ -152,6 +159,7 @@ class DesktopShell {
 
     // Sync preview engine and canvas aspect ratio to project settings
     this._previewEngine?.setProject(project);
+    this._audioEngine?.setProject(project);
     const { width, height } = project.canvas;
     const wrap = this._el.querySelector('.pm-canvas-wrap');
     if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
@@ -160,6 +168,7 @@ class DesktopShell {
   _onProjectClosed() {
     this._stop();
     this._previewEngine?.setProject(null);
+    this._audioEngine?.setProject(null);
     this._showStartScreen();
     this._el.querySelector('#pm-project-name').textContent = '';
     this._setSaveStatus('No project open');
@@ -172,6 +181,11 @@ class DesktopShell {
     this._updateTimecode(time);
     this._el.dispatchEvent(new CustomEvent('pm:seek', { detail: { time }, bubbles: true }));
     this._previewEngine?.seekTo(time); // async render, fire-and-forget
+    // During playback, restart audio from the new position
+    if (this._isPlaying) {
+      this._audioEngine?.stop();
+      this._audioEngine?.play(time).catch(() => {});
+    }
   }
 
   _togglePlay() {
@@ -183,12 +197,14 @@ class DesktopShell {
     this._isPlaying = true;
     this._toolbar?.setPlayState(true);
     this._previewEngine?.play(this._currentTime);
+    this._audioEngine?.play(this._currentTime).catch(() => {});
   }
 
   _stop() {
     if (!this._isPlaying) return;
     this._isPlaying = false;
     this._previewEngine?.stop();
+    this._audioEngine?.stop();
     this._toolbar?.setPlayState(false);
   }
 

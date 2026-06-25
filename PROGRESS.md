@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.7 · Web Audio: multi-clip cueing, volume automation/fades
+Phase 1 · step 1.8 · Render targets + custom ratio + WebCodecs export (mp4-muxer)
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -45,7 +45,11 @@ Phase 1 · step 1.7 · Web Audio: multi-clip cueing, volume automation/fades
   - [x] 1.6.3 inspector.js — keyframe add/delete UI (◆ button per property, keyframe list)
   - [x] 1.6.4 timeline.js — razor tool split, cross-track clip drag (ghost element), asset drop to lane, trimIn fix, trim-preview seek, keyframe diamond markers
   - [x] 1.6.5 shell.js — getCurrentTime wired to Inspector
-- [ ] 1.7 Web Audio: multi-clip, cueing, volume automation/fades
+- [x] 1.7 Web Audio: multi-clip, cueing, volume automation/fades
+  - [x] 1.7.1 src/engine/audio-engine.js — AudioContext, AudioBufferSourceNode per clip, GainNode, buffer cache, async latency compensation, stop guard
+  - [x] 1.7.2 Volume keyframe automation via AudioParam.linearRampToValueAtTime / setValueAtTime
+  - [x] 1.7.3 shell.js — AudioEngine wired to play/stop/seek/project open/close
+  - [x] 1.7.4 inspector.js — Volume propRow (0–2) with keyframe ◆ button
 - [ ] 1.8 Render targets + custom ratio + WebCodecs export (mp4-muxer)
 - [ ] 1.9 Autosave + project save/load + undo/redo
 - [ ] 1.10 Mobile UI shell over the same engine
@@ -74,3 +78,4 @@ Phase 1 · step 1.7 · Web Audio: multi-clip cueing, volume automation/fades
 - 2026-06-25 session 2 — did: Phase 1.4 complete — shell.js (start screen, project dialogs, keyboard shortcuts, transport), timeline.js (ruler, playhead, clip drag/trim, track headers, z-order, zoom), toolbar.js, inspector.js, media-library.js, app-shell.js wired to real desktop shell · stopped at: end of 1.4 · next: Phase 1.5 WebCodecs decode → WebGL2 compositor → preview loop
 - 2026-06-25 session 3 — did: Phase 1.5 complete — compositor.js (WebGL2 pipeline), decoder.js (ClipDecoder + DecoderPool), preview-engine.js (RAF loop, scrub/play modes), shell.js updated (PreviewEngine wired, project:dirty → timeline refresh, RAF-based play), media-library.js updated (full file import: picker + drag-drop, OPFS write, probe, Add to Timeline), app-shell.js async bug fixed · stopped at: end of 1.5 · next: Phase 1.6 Import / trim / split / reorder
 - 2026-06-25 session 4 — did: Phase 1.6 complete — splitClip() in edl.js, resolveAnimatedProps() in preview-engine.js, inspector.js rewritten with keyframe ◆ buttons + keyframe list, timeline.js completed (razor split, cross-track ghost drag, asset-drop-to-lane, trimIn correction, trim-preview seek, keyframe diamond markers, _cmdSplitClip, _cmdAddClipFromAsset), sw.js bumped to v4 · stopped at: end of 1.6 · next: Phase 1.7 Web Audio
+- 2026-06-25 session 5 — did: Phase 1.7 complete — audio-engine.js (AudioContext, AudioBufferSourceNode scheduling, GainNode volume, keyframe automation via AudioParam, buffer cache, async load + latency compensation, stop guard), inspector.js Volume propRow, shell.js AudioEngine wired (play/stop/seek/project events), sw.js bumped to v5 · stopped at: end of 1.7 · next: Phase 1.8 WebCodecs export

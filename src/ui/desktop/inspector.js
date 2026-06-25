@@ -76,6 +76,7 @@ export class Inspector {
       <div class="pm-insp-section">
         <div class="pm-insp-section-label">Compositing</div>
         ${propRow('Opacity',   'opacity',   p.opacity,   0, 1,     0.01, hasKF('opacity'))}
+        ${propRow('Volume',    'volume',    p.volume ?? 1, 0, 2, 0.01, hasKF('volume'))}
         ${row('Blend Mode', p.blendMode ?? 'normal')}
       </div>
 
