@@ -30,10 +30,14 @@ export class MediaLibrary {
       <div class="pm-lib-root">
         <div class="pm-lib-header">
           <span class="pm-lib-title">Media Library</span>
-          <button class="pm-lib-import-btn" id="pm-lib-import"
-                  title="Import media files" aria-label="Import media files" disabled>
-            + Import
-          </button>
+          <div style="display:flex;gap:6px">
+            <button class="pm-lib-text-btn" id="pm-lib-add-text"
+                    title="Add text clip" aria-label="Add text clip" disabled>T+</button>
+            <button class="pm-lib-import-btn" id="pm-lib-import"
+                    title="Import media files" aria-label="Import media files" disabled>
+              + Import
+            </button>
+          </div>
         </div>
         <div class="pm-lib-search" role="search">
           <input id="pm-lib-search" type="search" placeholder="Search assets…"
@@ -64,13 +68,18 @@ export class MediaLibrary {
     // Hidden file picker (no visible input, triggered programmatically)
     this._filePicker = document.createElement('input');
     this._filePicker.type = 'file';
-    this._filePicker.accept = 'video/*,audio/*,image/*';
+    this._filePicker.accept = 'video/*,audio/*,image/*,.ttf,.otf,.woff,.woff2';
     this._filePicker.multiple = true;
     this._filePicker.style.display = 'none';
     this._el.appendChild(this._filePicker);
     this._filePicker.addEventListener('change', () => {
       if (this._filePicker.files?.length) this._importFiles(this._filePicker.files);
       this._filePicker.value = ''; // reset so same file can be re-picked
+    });
+
+    // Add text clip button
+    this._el.querySelector('#pm-lib-add-text')?.addEventListener('click', () => {
+      this._addTextClip();
     });
 
     // Import button → open file picker
@@ -112,8 +121,10 @@ export class MediaLibrary {
   setProject(project) {
     this._project = project;
     this._renderList('');
-    const btn = this._el.querySelector('#pm-lib-import');
-    if (btn) btn.disabled = !project;
+    const importBtn = this._el.querySelector('#pm-lib-import');
+    if (importBtn) importBtn.disabled = !project;
+    const textBtn = this._el.querySelector('#pm-lib-add-text');
+    if (textBtn) textBtn.disabled = !project;
   }
 
   // ─── Import ──────────────────────────────────────────────────────────────────
@@ -122,7 +133,10 @@ export class MediaLibrary {
     if (!this._project || !this._storage) return;
     const files = [...fileList].filter((f) => {
       const t = f.type;
-      return t.startsWith('video/') || t.startsWith('audio/') || t.startsWith('image/');
+      const n = f.name.toLowerCase();
+      return t.startsWith('video/') || t.startsWith('audio/') || t.startsWith('image/') ||
+             t.startsWith('font/') || n.endsWith('.ttf') || n.endsWith('.otf') ||
+             n.endsWith('.woff') || n.endsWith('.woff2');
     });
     if (!files.length) return;
 
@@ -149,6 +163,7 @@ export class MediaLibrary {
           height: meta.height,
           duration: meta.duration,
           storageKey,
+          ...(meta.type === 'font' ? { fontFamily: file.name.replace(/\.(ttf|otf|woff2?)$/i, '') } : {}),
         });
 
         this._pm.markDirty();
@@ -191,6 +206,36 @@ export class MediaLibrary {
       });
     });
 
+    this._history.execute(cmd);
+    this._onProjectChanged();
+  }
+
+  _addTextClip() {
+    if (!this._project) return;
+    const cmd = this._history.snapshotCommand('Add text clip', (proj) => {
+      let track = proj.tracks.find((t) => t.type === 'overlay') ?? proj.tracks.find((t) => t.type === 'video');
+      if (!track) track = addTrack(proj, { type: 'overlay' });
+      let endTime = 0;
+      for (const c of track.clips) endTime = Math.max(endTime, c.startTime + c.duration);
+      const clip = addClip(proj, track.id, {
+        assetId: null,
+        startTime: endTime,
+        duration: 5,
+        trimIn: 0,
+        trimOut: 5,
+        speed: 1,
+      });
+      clip.properties.text = {
+        content: 'Text',
+        fontFamily: 'sans-serif',
+        fontSize: 72,
+        color: '#ffffff',
+        align: 'center',
+        bold: false,
+        italic: false,
+        lineHeight: 1.3,
+      };
+    });
     this._history.execute(cmd);
     this._onProjectChanged();
   }
@@ -304,7 +349,11 @@ function probeFile(file) {
     const type = mime.startsWith('video/') ? 'video'
                : mime.startsWith('audio/') ? 'audio'
                : mime.startsWith('image/') ? 'image'
+               : mime.startsWith('font/')  ? 'font'
+               : /\.(ttf|otf|woff2?)$/i.test(file.name) ? 'font'
                : 'video'; // fallback
+
+    if (type === 'font') { resolve({ type, width: 0, height: 0, duration: 0 }); return; }
 
     const url = URL.createObjectURL(file);
     const done = (width, height, duration) => { URL.revokeObjectURL(url); resolve({ type, width, height, duration }); };
@@ -344,6 +393,11 @@ function injectStyles() {
       padding:8px 10px; border-bottom:1px solid var(--border); flex-shrink:0; gap:8px; }
     .pm-lib-title { font-size:0.7rem; font-weight:600; text-transform:uppercase;
       letter-spacing:0.08em; color:var(--text-muted); }
+    .pm-lib-text-btn { background:var(--bg-ui,#2a2a3a); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:4px 8px; font-size:0.75rem;
+      font-weight:700; cursor:pointer; font-family:var(--font-ui); }
+    .pm-lib-text-btn:hover:not(:disabled) { border-color:var(--accent-peach); color:var(--accent-peach); }
+    .pm-lib-text-btn:disabled { color:var(--text-dim); cursor:default; }
     .pm-lib-import-btn { background:var(--accent-peach); border:none; color:#181820;
       border-radius:5px; padding:4px 10px; font-size:0.75rem; font-weight:700;
       cursor:pointer; font-family:var(--font-ui); }
@@ -406,6 +460,8 @@ function assetIcon(type) {
     case 'video': return '🎬';
     case 'audio': return '🎵';
     case 'image': return '🖼';
+    case 'font':  return 'Aa';
+    case 'lut':   return '🎨';
     default:      return '📄';
   }
 }

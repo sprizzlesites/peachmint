@@ -50,6 +50,7 @@ export class Inspector {
     const asset = this._pm.project?.assets.find((a) => a.id === clip.assetId);
     const p = clip.properties;
     const hasKF = (path) => (clip.keyframes[path]?.length ?? 0) > 0;
+    const isTextClip = !clip.assetId && clip.properties.text != null;
 
     this._el.querySelector('#pm-insp-header').innerHTML = `
       <span class="pm-insp-title">Clip</span>
@@ -73,6 +74,50 @@ export class Inspector {
         ${row('Type',   asset.type ?? '—')}
         ${asset.width ? row('Resolution', `${asset.width}×${asset.height}`) : ''}
         ${asset.duration ? row('Media dur.', formatSec(asset.duration)) : ''}
+      </div>` : ''}
+
+      ${isTextClip ? `
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Text</div>
+        <div class="pm-insp-row pm-insp-row-col">
+          <span class="pm-insp-row-label">Content</span>
+          <textarea class="pm-insp-textarea pm-text-content" rows="3"
+                    placeholder="Enter text…">${escHtml(p.text?.content ?? '')}</textarea>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Font Family</span>
+          <input type="text" class="pm-insp-num pm-text-font" style="width:120px"
+                 value="${escHtml(p.text?.fontFamily ?? 'sans-serif')}"
+                 placeholder="sans-serif" aria-label="Font family">
+        </div>
+        ${propRow('Font Size', 'text.fontSize', p.text?.fontSize ?? 72, 8, 400, 1, hasKF('text.fontSize'))}
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Color</span>
+          <input type="color" class="pm-text-color" value="${escHtml(p.text?.color ?? '#ffffff')}">
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Align</span>
+          <select class="pm-text-align pm-insp-select" aria-label="Text alignment">
+            <option value="left"   ${(p.text?.align ?? 'center') === 'left'   ? 'selected' : ''}>Left</option>
+            <option value="center" ${(p.text?.align ?? 'center') === 'center' ? 'selected' : ''}>Center</option>
+            <option value="right"  ${(p.text?.align ?? 'center') === 'right'  ? 'selected' : ''}>Right</option>
+          </select>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Bold</span>
+          <label class="pm-toggle">
+            <input type="checkbox" class="pm-text-bold" ${p.text?.bold ? 'checked' : ''}>
+            <span class="pm-toggle-track"></span>
+          </label>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Italic</span>
+          <label class="pm-toggle">
+            <input type="checkbox" class="pm-text-italic" ${p.text?.italic ? 'checked' : ''}>
+            <span class="pm-toggle-track"></span>
+          </label>
+        </div>
+        ${propRow('Line Height', 'text.lineHeight', p.text?.lineHeight ?? 1.3, 0.5, 4, 0.05, hasKF('text.lineHeight'))}
       </div>` : ''}
 
       <div class="pm-insp-section">
@@ -229,6 +274,20 @@ export class Inspector {
     // Wire preset controls
     this._el.querySelector('#pm-insp-preset-save')?.addEventListener('click', () => this._onPresetSave());
     this._el.querySelector('#pm-insp-preset-load')?.addEventListener('click', () => this._onPresetLoad());
+
+    // Wire text controls
+    const textContentEl = this._el.querySelector('.pm-text-content');
+    textContentEl?.addEventListener('change', () => this._onTextPropChange('content', textContentEl.value));
+    const textFontEl = this._el.querySelector('.pm-text-font');
+    textFontEl?.addEventListener('change', () => this._onTextPropChange('fontFamily', textFontEl.value.trim() || 'sans-serif'));
+    const textColorEl = this._el.querySelector('.pm-text-color');
+    textColorEl?.addEventListener('change', () => this._onTextPropChange('color', textColorEl.value));
+    const textAlignEl = this._el.querySelector('.pm-text-align');
+    textAlignEl?.addEventListener('change', () => this._onTextPropChange('align', textAlignEl.value));
+    const textBoldEl = this._el.querySelector('.pm-text-bold');
+    textBoldEl?.addEventListener('change', () => this._onTextPropChange('bold', textBoldEl.checked));
+    const textItalicEl = this._el.querySelector('.pm-text-italic');
+    textItalicEl?.addEventListener('change', () => this._onTextPropChange('italic', textItalicEl.checked));
   }
 
   showTrack(track) {
@@ -336,11 +395,11 @@ export class Inspector {
   _onMaskTypeChange(type) {
     const clip = this._currentClip;
     if (!clip || !this._pm.project) return;
-    this._history.snapshotCommand('Set mask type', () => {
+    const cmd = this._history.snapshotCommand('Set mask type', () => {
       (clip.properties.mask ??= {}).type = type;
     });
-    this._pm.markDirty();
-    this.showClip(clip); // re-render so mask prop rows appear/disappear
+    this._history.execute(cmd);
+    this.showClip(clip);
   }
 
   _onMaskInvertChange(inverted) {
@@ -357,12 +416,12 @@ export class Inspector {
   _onTransitionTypeChange(type) {
     const clip = this._currentClip;
     if (!clip || !this._pm.project) return;
-    this._history.snapshotCommand('Set transition type', () => {
+    const cmd = this._history.snapshotCommand('Set transition type', () => {
       clip.transition = type === 'none'
         ? null
         : { type, duration: clip.transition?.duration ?? 0.5 };
     });
-    this._pm.markDirty();
+    this._history.execute(cmd);
     this.showClip(clip);
   }
 
@@ -413,19 +472,30 @@ export class Inspector {
         const clip = this._currentClip;
         if (!clip) return;
         const pp = preset.properties;
-        this._history.snapshotCommand('Load preset: ' + (preset.name ?? file.name), () => {
+        const cmd = this._history.snapshotCommand('Load preset: ' + (preset.name ?? file.name), () => {
           if (pp.color)  clip.properties.color  = pp.color;
           if (pp.vfx)    clip.properties.vfx    = pp.vfx;
           if (pp.chroma) clip.properties.chroma = pp.chroma;
           if (pp.mask)   clip.properties.mask   = pp.mask;
         });
-        this._pm.markDirty();
+        this._history.execute(cmd);
         this.showClip(clip);
       } catch (err) {
         this._showError('Preset load failed: ' + err.message);
       }
     }, { once: true });
     input.click();
+  }
+
+  _onTextPropChange(key, value) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project || !clip.properties.text) return;
+    const old = clip.properties.text[key];
+    this._history.execute({
+      label: `Set text.${key}`,
+      execute: () => { clip.properties.text[key] = value; this._pm.markDirty(); },
+      undo:    () => { clip.properties.text[key] = old;   this._pm.markDirty(); },
+    });
   }
 
   _onImportLUT() {
@@ -455,12 +525,12 @@ export class Inspector {
       const id         = 'lut' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
       const asset      = { id, name: file.name, type: 'lut', storageKey, lutFormat: fmt, lutSize: parsed.size };
 
-      this._history.snapshotCommand('Import LUT: ' + file.name, () => {
+      const cmd = this._history.snapshotCommand('Import LUT: ' + file.name, () => {
         project.assets.push(asset);
         if (!clip.properties.color) clip.properties.color = {};
         clip.properties.color.lut = id;
       });
-      this._pm.markDirty();
+      this._history.execute(cmd);
       this.showClip(clip);
     } catch (e) {
       this._showError('LUT import failed: ' + e.message);
@@ -471,10 +541,10 @@ export class Inspector {
     const clip    = this._currentClip;
     const project = this._pm.project;
     if (!clip || !project) return;
-    this._history.snapshotCommand('Clear LUT', () => {
+    const cmd = this._history.snapshotCommand('Clear LUT', () => {
       if (clip.properties.color) delete clip.properties.color.lut;
     });
-    this._pm.markDirty();
+    this._history.execute(cmd);
     this.showClip(clip);
   }
 
@@ -663,6 +733,16 @@ function injectStyles() {
 
     /* Preset row */
     .pm-insp-preset-controls { display:flex; gap:6px; }
+
+    /* Text clip */
+    .pm-insp-row-col { flex-direction:column; align-items:flex-start; gap:4px; }
+    .pm-insp-textarea { width:100%; box-sizing:border-box; background:var(--bg-base);
+      border:1px solid var(--border); color:var(--text-primary); border-radius:4px;
+      padding:6px 8px; font-size:0.78rem; font-family:var(--font-ui); resize:vertical;
+      min-height:60px; outline:none; line-height:1.4; }
+    .pm-insp-textarea:focus { border-color:var(--accent-purple); }
+    .pm-text-color { width:36px; height:22px; padding:1px; border:1px solid var(--border);
+      border-radius:4px; cursor:pointer; background:var(--bg-base); }
   `;
   document.head.appendChild(s);
 }

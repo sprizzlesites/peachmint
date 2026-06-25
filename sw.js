@@ -1,7 +1,7 @@
 // PeachMint Service Worker — app-shell cache + offline strategy
 // Strategy: cache-first for app shell assets; network-first for CDN deps
 
-const CACHE_NAME = 'peachmint-v10';
+const CACHE_NAME = 'peachmint-v11';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -24,6 +24,7 @@ const APP_SHELL = [
   '/src/engine/audio-engine.js',
   '/src/engine/export-engine.js',
   '/src/engine/lut.js',
+  '/src/engine/text-renderer.js',
   '/src/ui/mobile/shell.js',
 ];
 

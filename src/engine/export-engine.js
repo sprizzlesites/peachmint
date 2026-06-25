@@ -16,18 +16,39 @@ import { Compositor }              from './compositor.js';
 import { DecoderPool }             from './decoder.js';
 import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
 import { parseCube, parse3dl }     from './lut.js';
+import { TextRenderer }              from './text-renderer.js';
 
 const MP4_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
 
 export class ExportEngine {
   /** @param {{ storage: import('./storage.js').StorageLayer }} opts */
   constructor({ storage }) {
-    this._storage  = storage;
-    this._aborted  = false;
+    this._storage   = storage;
+    this._aborted   = false;
+    this._fontCache = new Map();
   }
 
   /** Cancel an in-progress export at the next frame boundary. */
   abort() { this._aborted = true; }
+
+  async _ensureFont(fontFamily, project) {
+    const SYSTEM = ['sans-serif', 'serif', 'monospace', 'cursive', 'fantasy'];
+    if (!fontFamily || SYSTEM.includes(fontFamily)) return;
+    if (this._fontCache.has(fontFamily)) return;
+    const asset = project.assets.find((a) => a.type === 'font' && a.fontFamily === fontFamily);
+    if (!asset?.storageKey) { this._fontCache.set(fontFamily, false); return; }
+    try {
+      const ab  = await this._storage.readMedia(asset.storageKey);
+      if (!ab) throw new Error('Font data not found');
+      const buf  = ab instanceof ArrayBuffer ? ab : ab.buffer;
+      const face = new FontFace(fontFamily, buf);
+      await face.load();
+      document.fonts.add(face);
+      this._fontCache.set(fontFamily, true);
+    } catch {
+      this._fontCache.set(fontFamily, false);
+    }
+  }
 
   // ─── Main export ─────────────────────────────────────────────────────────────
 
@@ -114,7 +135,9 @@ export class ExportEngine {
     const compositor = new Compositor(offscreen);
     compositor.init();
     const decoders  = new DecoderPool(this._storage);
-    const lutCache  = new Map(); // assetId → WebGLTexture (owned by compositor)
+    const lutCache     = new Map(); // assetId → WebGLTexture (owned by compositor)
+    const textRenderer = new TextRenderer();
+    this._fontCache.clear();
 
     const duration      = Math.max(totalDuration(project), 0.01);
     const frameDuration = 1 / fps;
@@ -129,7 +152,7 @@ export class ExportEngine {
         if (videoError)    throw videoError;
 
         const time = i * frameDuration;
-        await this._renderFrame(compositor, decoders, project, time, lutCache);
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer);
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
@@ -172,14 +195,30 @@ export class ExportEngine {
 
   // ─── Video frame rendering ────────────────────────────────────────────────────
 
-  async _renderFrame(compositor, decoders, project, time, lutCache) {
+  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer) {
     const bg = project.canvas?.background;
     compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
     compositor.setTime(time);
 
+    const cw = project.canvas.width;
+    const ch = project.canvas.height;
+
     const active = clipsAtTime(project, time);
     for (const { clip, track } of active) {
       if (track.type === 'audio') continue;
+
+      const outFactor = getTransitionOutFactor(clip, time);
+
+      if (!clip.assetId) {
+        if (clip.properties.text && textRenderer) {
+          const props = resolveProps(clip, time);
+          await this._ensureFont(props.text?.fontFamily, project);
+          const tex = textRenderer.render(props.text, cw, ch);
+          compositor.setActiveLUT(null);
+          compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
+        }
+        continue;
+      }
 
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset?.storageKey) {
@@ -188,8 +227,7 @@ export class ExportEngine {
         continue;
       }
 
-      const clipTime  = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
-      const outFactor = getTransitionOutFactor(clip, time);
+      const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
       try {
         const dec = await decoders.getDecoder(asset);
         await dec.seekTo(clipTime);
@@ -212,6 +250,18 @@ export class ExportEngine {
     const transIn = transitionClipsAtTime(project, time);
     for (const { clip, track, factor, trStart } of transIn) {
       if (track.type === 'audio') continue;
+
+      if (!clip.assetId) {
+        if (clip.properties.text && textRenderer) {
+          const props = resolveProps(clip, time);
+          await this._ensureFont(props.text?.fontFamily, project);
+          const tex = textRenderer.render(props.text, cw, ch);
+          compositor.setActiveLUT(null);
+          compositor.drawClip(tex, props, cw, ch, factor);
+        }
+        continue;
+      }
+
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset?.storageKey) continue;
       const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);

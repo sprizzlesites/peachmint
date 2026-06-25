@@ -17,6 +17,7 @@ import { Compositor }                            from './compositor.js';
 import { DecoderPool }                           from './decoder.js';
 import { clipsAtTime, totalDuration, interpolate, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
 import { parseCube, parse3dl }                   from './lut.js';
+import { TextRenderer }                          from './text-renderer.js';
 
 export class PreviewEngine extends EventTarget {
   /**
@@ -39,6 +40,33 @@ export class PreviewEngine extends EventTarget {
     this._rendering  = false;
     this._ready      = false;
     this._lutTexCache = new Map(); // assetId → WebGLTexture
+    this._fontCache   = new Map(); // fontFamily → true/false (loaded/failed)
+    this._textRenderer = null;
+  }
+
+  _getTextRenderer() {
+    if (!this._textRenderer) this._textRenderer = new TextRenderer();
+    return this._textRenderer;
+  }
+
+  async _ensureFont(fontFamily) {
+    const SYSTEM = ['sans-serif', 'serif', 'monospace', 'cursive', 'fantasy'];
+    if (!fontFamily || SYSTEM.includes(fontFamily)) return;
+    if (this._fontCache.has(fontFamily)) return;
+    const asset = this._project?.assets.find((a) => a.type === 'font' && a.fontFamily === fontFamily);
+    if (!asset?.storageKey) { this._fontCache.set(fontFamily, false); return; }
+    try {
+      const ab  = await this._storage.readMedia(asset.storageKey);
+      if (!ab) throw new Error('Font data not found');
+      const buf  = ab instanceof ArrayBuffer ? ab : ab.buffer;
+      const face = new FontFace(fontFamily, buf);
+      await face.load();
+      document.fonts.add(face);
+      this._fontCache.set(fontFamily, true);
+    } catch (e) {
+      console.warn('Font load failed:', fontFamily, e);
+      this._fontCache.set(fontFamily, false);
+    }
   }
 
   // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -53,6 +81,9 @@ export class PreviewEngine extends EventTarget {
   dispose() {
     this.stop();
     this._clearLUTs();
+    this._fontCache.clear();
+    this._textRenderer?.dispose();
+    this._textRenderer = null;
     this._decoders?.dispose();
     this._compositor.dispose();
     this._ready = false;
@@ -146,9 +177,25 @@ export class PreviewEngine extends EventTarget {
       this._compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
       this._compositor.setTime(time);
 
+      const cw = this._project.canvas.width;
+      const ch = this._project.canvas.height;
+
       const active = clipsAtTime(this._project, time);
       for (const { clip, track } of active) {
         if (track.type === 'audio') continue;
+        const outFactor = getTransitionOutFactor(clip, time);
+
+        // Text clip: no assetId, render via Canvas 2D
+        if (!clip.assetId) {
+          if (clip.properties.text) {
+            const props = resolveAnimatedProps(clip, time);
+            await this._ensureFont(props.text?.fontFamily);
+            const tex = this._getTextRenderer().render(props.text, cw, ch);
+            this._compositor.setActiveLUT(null);
+            this._compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
+          }
+          continue;
+        }
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
         if (!asset || !asset.storageKey) {
@@ -158,7 +205,6 @@ export class PreviewEngine extends EventTarget {
         }
 
         const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
-        const outFactor = getTransitionOutFactor(clip, time);
 
         try {
           const dec = await this._decoders.getDecoder(asset);
@@ -180,6 +226,18 @@ export class PreviewEngine extends EventTarget {
       const transIn = transitionClipsAtTime(this._project, time);
       for (const { clip, track, factor, trStart } of transIn) {
         if (track.type === 'audio') continue;
+
+        if (!clip.assetId) {
+          if (clip.properties.text) {
+            const props = resolveAnimatedProps(clip, time);
+            await this._ensureFont(props.text?.fontFamily);
+            const tex = this._getTextRenderer().render(props.text, cw, ch);
+            this._compositor.setActiveLUT(null);
+            this._compositor.drawClip(tex, props, cw, ch, factor);
+          }
+          continue;
+        }
+
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
         if (!asset?.storageKey) continue;
         const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);

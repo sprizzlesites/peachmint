@@ -72,11 +72,11 @@ export function createClip({
 }
 
 /** Create an asset record (no media bytes; bytes live in storage). */
-export function createAsset({ name, type, mimeType, width, height, duration, storageKey }) {
-  return {
+export function createAsset({ name, type, mimeType, width, height, duration, storageKey, fontFamily }) {
+  const asset = {
     id: newId('asset'),
     name,
-    type,   // 'video' | 'audio' | 'image'
+    type,   // 'video' | 'audio' | 'image' | 'font' | 'lut'
     mimeType,
     width,
     height,
@@ -85,6 +85,8 @@ export function createAsset({ name, type, mimeType, width, height, duration, sto
     proxyKey: null, // set after proxy generation
     createdAt: new Date().toISOString(),
   };
+  if (fontFamily !== undefined) asset.fontFamily = fontFamily;
+  return asset;
 }
 
 /** Create a keyframe. easing: 'linear' | 'ease' | 'hold' | 'bezier' */
