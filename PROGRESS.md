@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.10 · Mobile UI shell
+Phase 2 · step 2.11 · Color correction + .cube/.3dl LUT import
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -61,7 +61,10 @@ Phase 1 · step 1.10 · Mobile UI shell
   - [x] 1.9.3 Inline project rename: double-click project name → editable input (Enter/Esc/blur commit)
   - [x] 1.9.4 Open project dialog: delete button per row with <dialog> confirmation, fix private storage access
   - [x] 1.9.5 sw.js bumped to v7
-- [ ] 1.10 Mobile UI shell over the same engine
+- [x] 1.10 Mobile UI shell over the same engine
+  - [x] 1.10.1 src/ui/mobile/shell.js — MobileShell: header, canvas preview, transport, touch timeline (scroll/tap-seek/tap-select), bottom tab nav (Media/Clip/Export), menu sheet, project dialogs, import, undo/redo keyboard shortcuts
+  - [x] 1.10.2 app-shell.js — dynamic import of mountMobileShell, removed placeholder
+  - [x] 1.10.3 sw.js bumped to v8, mobile/shell.js added to APP_SHELL cache
 
 ### Phase 2 — Pro features (P1)
 - [ ] 2.11 Color correction + .cube/.3dl LUT import
@@ -90,3 +93,4 @@ Phase 1 · step 1.10 · Mobile UI shell
 - 2026-06-25 session 5 — did: Phase 1.7 complete — audio-engine.js (AudioContext, AudioBufferSourceNode scheduling, GainNode volume, keyframe automation via AudioParam, buffer cache, async load + latency compensation, stop guard), inspector.js Volume propRow, shell.js AudioEngine wired (play/stop/seek/project events), sw.js bumped to v5 · stopped at: end of 1.7 · next: Phase 1.8 WebCodecs export
 - 2026-06-25 session 6 — did: Phase 1.8 complete — export-engine.js (ExportEngine: OffscreenCanvas frame render, VideoEncoder H.264 AVCC, AudioEncoder AAC via OfflineAudioContext, mp4-muxer ArrayBufferTarget, abort/backpressure, keyframe interpolation), toolbar.js export button wired, shell.js _showExportDialog() (resolution/fps/bitrate UI, progress+ETA, error display, MP4 download), sw.js bumped to v6 · stopped at: end of 1.8 · next: Phase 1.9 autosave + save/load + undo/redo
 - 2026-06-25 session 7 — did: Phase 1.9 complete — shell.js: history.clear() on project open/close, * unsaved indicator (project:dirty/saved/autosaved wired), inline project rename (dblclick name→input), open dialog delete per row (<dialog> confirm, _confirmDelete helper), fixed _storage private access, CSS .pm-unsaved::after + .pm-name-edit + .pm-proj-info + .pm-proj-del + .btn-danger, sw.js bumped to v7 · stopped at: end of 1.9 · next: Phase 1.10 mobile UI shell
+- 2026-06-25 session 8 — did: Phase 1.10 complete — src/ui/mobile/shell.js (MobileShell: header+menu-sheet, canvas preview, touch transport, touch-scroll timeline with ruler/clips/playhead/tap-seek/clip-select, bottom tabs: Media library+import / Clip properties+delete / Export MP4 with progress, project dialogs, undo/redo keyboard shortcuts, injectStyles with full mobile CSS), app-shell.js updated to dynamically import mountMobileShell + removed placeholder, sw.js bumped to v8 · stopped at: end of Phase 1 · next: Phase 2.11 color correction + LUT

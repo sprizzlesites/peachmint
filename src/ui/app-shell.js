@@ -83,8 +83,12 @@ async function mountShell(isMobile) {
   };
 
   if (isMobile) {
-    // Mobile shell (Phase 1.10) — placeholder for now
-    root.innerHTML = buildMobilePlaceholder();
+    const { mountMobileShell } = await import('./mobile/shell.js');
+    mountMobileShell(root, {
+      projectManager: _projectManager,
+      historyManager: _historyManager,
+      storage: _storage,
+    });
   } else {
     // Real desktop shell (Phase 1.4)
     const { mountDesktopShell } = await import('./desktop/shell.js');
@@ -105,43 +109,6 @@ function detectMobile() {
   if (override === 'desktop') return false;
   if (override === 'mobile') return true;
   return touchPrimary || narrowViewport;
-}
-
-// ─── Mobile placeholder (Phase 1.10) ─────────────────────────────────────────
-
-function buildMobilePlaceholder() {
-  return `
-    <div class="pm-mobile-shell" role="main" aria-label="PeachMint Mobile Editor">
-      <header class="pm-mobile-header">
-        <span class="pm-brand">🍑🌿 PeachMint</span>
-        <button class="pm-icon-btn" aria-label="Project menu" onclick="openMobileMenu()">☰</button>
-      </header>
-      <section class="pm-mobile-preview" aria-label="Preview">
-        <canvas id="pm-preview" aria-label="Video preview canvas"></canvas>
-        <div class="pm-mobile-preview-placeholder">
-          <span>Preview — Phase 1.5</span>
-        </div>
-      </section>
-      <div class="pm-mobile-transport" aria-label="Playback controls">
-        <button class="pm-mobile-transport-btn" aria-label="Rewind">⏮</button>
-        <button class="pm-mobile-transport-btn pm-mobile-play" aria-label="Play">▶</button>
-        <button class="pm-mobile-transport-btn" aria-label="Fast forward">⏭</button>
-        <span class="pm-timecode" aria-live="polite">00:00:00:00</span>
-      </div>
-      <section class="pm-mobile-timeline" aria-label="Timeline">
-        <div class="pm-timeline-placeholder">
-          <span>Timeline — Phase 1.4 / 1.10</span>
-        </div>
-      </section>
-      <nav class="pm-mobile-bottombar" role="toolbar" aria-label="Tools">
-        <button class="pm-mobile-tab" aria-label="Media">📂</button>
-        <button class="pm-mobile-tab" aria-label="Edit">✂️</button>
-        <button class="pm-mobile-tab" aria-label="Effects">✨</button>
-        <button class="pm-mobile-tab" aria-label="Export">⬇️</button>
-        <button class="pm-mobile-tab" aria-label="System check" onclick="showSysCheck()">⚙️</button>
-      </nav>
-    </div>
-  `;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
