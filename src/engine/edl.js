@@ -124,6 +124,46 @@ export function addClip(project, trackId, clipOpts = {}) {
   return clip;
 }
 
+/**
+ * Split a clip at a project-time position into two adjacent clips.
+ * Returns { left, right } or null if splitTime is outside the clip's bounds.
+ */
+export function splitClip(project, clipId, splitTime) {
+  for (const track of project.tracks) {
+    const idx = track.clips.findIndex((c) => c.id === clipId);
+    if (idx === -1) continue;
+
+    const clip = track.clips[idx];
+    const splitOffset = splitTime - clip.startTime;
+    if (splitOffset <= 0 || splitOffset >= clip.duration) return null;
+
+    // Media time at the split point
+    const mediaSplit = (clip.trimIn ?? 0) + splitOffset * (clip.speed ?? 1);
+
+    // Shrink the left part (mutate in place to keep the same id)
+    const savedDuration = clip.duration;
+    const savedTrimOut  = clip.trimOut;
+    clip.duration = splitOffset;
+    clip.trimOut  = mediaSplit;
+
+    // Build the right part as a new clip
+    const right = createClip({
+      assetId:   clip.assetId,
+      startTime: splitTime,
+      duration:  savedDuration - splitOffset,
+      trimIn:    mediaSplit,
+      trimOut:   savedTrimOut,
+      speed:     clip.speed,
+    });
+    right.properties = JSON.parse(JSON.stringify(clip.properties));
+
+    track.clips.splice(idx + 1, 0, right);
+    touch(project);
+    return { left: clip, right };
+  }
+  return null;
+}
+
 /** Remove a clip from its track. Returns removed clip or null. */
 export function removeClip(project, clipId) {
   for (const track of project.tracks) {

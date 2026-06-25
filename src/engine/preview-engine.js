@@ -13,9 +13,9 @@
  *   preview:ended                    — fired when playback reaches the end
  */
 
-import { Compositor }           from './compositor.js';
-import { DecoderPool }          from './decoder.js';
-import { clipsAtTime, totalDuration } from './edl.js';
+import { Compositor }                            from './compositor.js';
+import { DecoderPool }                           from './decoder.js';
+import { clipsAtTime, totalDuration, interpolate } from './edl.js';
 
 export class PreviewEngine extends EventTarget {
   /**
@@ -35,7 +35,7 @@ export class PreviewEngine extends EventTarget {
     this._playStartTime = 0;
     this._currentTime   = 0;
 
-    this._rendering = false; // guard against concurrent _renderFrame calls
+    this._rendering = false;
     this._ready     = false;
   }
 
@@ -57,11 +57,6 @@ export class PreviewEngine extends EventTarget {
 
   // ─── Project ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Bind a project to render. Updates canvas pixel dimensions to match canvas settings.
-   * Pass null to clear and go dark.
-   * @param {object|null} project
-   */
   setProject(project) {
     this._project = project;
     if (project) {
@@ -74,10 +69,6 @@ export class PreviewEngine extends EventTarget {
 
   // ─── Scrub ────────────────────────────────────────────────────────────────────
 
-  /**
-   * Render a single frame at the given time. Fire-and-forget; caller need not await.
-   * @param {number} time — seconds
-   */
   async seekTo(time) {
     if (!this._ready) return;
     this._currentTime = Math.max(0, time);
@@ -86,10 +77,6 @@ export class PreviewEngine extends EventTarget {
 
   // ─── Playback ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Start the RAF-based playback loop from the given time.
-   * @param {number} [fromTime]
-   */
   play(fromTime) {
     if (!this._ready || this._playing) return;
     this._playing       = true;
@@ -106,9 +93,9 @@ export class PreviewEngine extends EventTarget {
     }
   }
 
-  get isPlaying()    { return this._playing; }
-  get currentTime()  { return this._currentTime; }
-  get isReady()      { return this._ready; }
+  get isPlaying()   { return this._playing; }
+  get currentTime() { return this._currentTime; }
+  get isReady()     { return this._ready; }
 
   // ─── RAF loop ─────────────────────────────────────────────────────────────────
 
@@ -134,7 +121,7 @@ export class PreviewEngine extends EventTarget {
 
     this._currentTime = t;
     this.dispatchEvent(new CustomEvent('preview:tick', { detail: { time: t } }));
-    this._renderFrame(t).catch(() => {}); // async; errors silently skipped
+    this._renderFrame(t).catch(() => {});
     this._scheduleRaf();
   }
 
@@ -142,7 +129,7 @@ export class PreviewEngine extends EventTarget {
 
   async _renderFrame(time) {
     if (!this._project || !this._compositor.isReady) return;
-    if (this._rendering) return; // skip if a previous frame is still decoding
+    if (this._rendering) return;
     this._rendering = true;
 
     try {
@@ -151,16 +138,14 @@ export class PreviewEngine extends EventTarget {
 
       const active = clipsAtTime(this._project, time);
       for (const { clip, track } of active) {
-        if (track.type === 'audio') continue; // Web Audio handles audio (Phase 1.7)
+        if (track.type === 'audio') continue;
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
         if (!asset || !asset.storageKey) {
-          // Clip with no backing asset → dark-red placeholder
           this._compositor.drawSolid([0.15, 0.04, 0.04, 1]);
           continue;
         }
 
-        // Map project-time → media-time for this clip
         const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
 
         try {
@@ -168,10 +153,11 @@ export class PreviewEngine extends EventTarget {
           await dec.seekTo(clipTime);
           const src = dec.getSource();
           if (src) {
-            this._compositor.drawClip(src, clip.properties, dec.naturalWidth, dec.naturalHeight);
+            // Use interpolated (keyframed) props if keyframes exist
+            const props = resolveAnimatedProps(clip, time);
+            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight);
           }
-        } catch (err) {
-          // Decoder failure → dark-red placeholder, don't crash the frame
+        } catch {
           this._compositor.drawSolid([0.2, 0.05, 0.05, 1]);
         }
       }
@@ -184,4 +170,27 @@ export class PreviewEngine extends EventTarget {
     if (!this._project) return 10;
     return Math.max(totalDuration(this._project), 10);
   }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Return clip.properties with any keyframed paths resolved at projectTime.
+ * Returns the static properties object directly when no keyframes are set
+ * (avoids the JSON clone overhead on every frame for non-animated clips).
+ */
+function resolveAnimatedProps(clip, projectTime) {
+  if (!clip.keyframes || Object.keys(clip.keyframes).length === 0) return clip.properties;
+  const props = JSON.parse(JSON.stringify(clip.properties));
+  for (const path of Object.keys(clip.keyframes)) {
+    const v = interpolate(clip, path, projectTime);
+    if (v !== undefined) setPropPath(props, path, v);
+  }
+  return props;
+}
+
+function setPropPath(obj, path, val) {
+  const keys = path.split('.');
+  const last = keys.pop();
+  keys.reduce((o, k) => { if (o[k] == null) o[k] = {}; return o[k]; }, obj)[last] = val;
 }

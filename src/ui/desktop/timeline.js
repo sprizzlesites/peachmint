@@ -14,7 +14,7 @@
 
 import {
   addTrack, removeTrack, addClip, removeClip,
-  createTrack, totalDuration,
+  createTrack, totalDuration, splitClip,
 } from '../../engine/edl.js';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -55,8 +55,9 @@ export class Timeline {
     this._tool = 'pointer'; // 'pointer' | 'razor' | 'hand'
 
     // Drag state
-    this._drag = null;   // { type:'playhead'|'clip', ... }
+    this._drag = null;   // { type:'playhead'|'clip'|'trim', ... }
     this._scrollLeft = 0;
+    this._laneYMap = []; // [{ trackId, top, bottom }] built by _renderLanes
 
     // DOM refs (set in mount)
     this._rulerCanvas = null;
@@ -308,6 +309,7 @@ export class Timeline {
     let totalH = sortedTracks.reduce((s, t) => s + trackHeight(t), 0) + ADD_BTN_H + 4;
     this._lanesInner.style.height = `${Math.max(totalH, 120)}px`;
 
+    this._laneYMap = [];
     let yOffset = 0;
     sortedTracks.forEach((track) => {
       const h = trackHeight(track);
@@ -317,6 +319,30 @@ export class Timeline {
       lane.dataset.trackId = track.id;
       lane.style.cssText = `top:${yOffset}px; height:${h}px; background:${col.lane};`;
       lane.style.width = '100%';
+
+      this._laneYMap.push({ trackId: track.id, top: yOffset, bottom: yOffset + h });
+
+      // Asset drag-drop from media library
+      lane.addEventListener('dragover', (e) => {
+        if (e.dataTransfer?.types.includes('application/peachmint-asset')) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+          lane.classList.add('pm-tl-lane-drop');
+        }
+      });
+      lane.addEventListener('dragleave', () => lane.classList.remove('pm-tl-lane-drop'));
+      lane.addEventListener('drop', (e) => {
+        e.preventDefault();
+        lane.classList.remove('pm-tl-lane-drop');
+        const assetId = e.dataTransfer.getData('application/peachmint-asset');
+        if (!assetId || !this._project) return;
+        const asset = this._project.assets.find((a) => a.id === assetId);
+        if (!asset) return;
+        const rect = this._lanesScroll.getBoundingClientRect();
+        const dropX = e.clientX - rect.left + this._scrollLeft;
+        const dropTime = Math.max(0, dropX / this._pxPerSec);
+        this._cmdAddClipFromAsset(track, asset, dropTime);
+      });
 
       // Render clips
       for (const clip of track.clips) {
@@ -348,8 +374,27 @@ export class Timeline {
     el.setAttribute('role', 'button');
     el.setAttribute('aria-label', `Clip: ${clip.id.slice(0, 8)}, ${clip.duration.toFixed(2)}s`);
     el.setAttribute('tabindex', '0');
+
+    // Build keyframe diamond markers
+    let kfHtml = '';
+    if (clip.keyframes) {
+      const seen = new Set();
+      for (const kfs of Object.values(clip.keyframes)) {
+        for (const kf of kfs) {
+          const key = kf.time.toFixed(4);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const px = (kf.time - clip.startTime) * this._pxPerSec;
+          if (px >= 0 && px <= width) {
+            kfHtml += `<div class="pm-tl-kf-mark" style="left:${px}px" aria-hidden="true"></div>`;
+          }
+        }
+      }
+    }
+
     el.innerHTML = `
       <span class="pm-tl-clip-label">${formatDuration(clip.duration)}</span>
+      ${kfHtml}
       <div class="pm-tl-clip-trim-l" data-resize="left" aria-hidden="true"></div>
       <div class="pm-tl-clip-trim-r" data-resize="right" aria-hidden="true"></div>
     `;
@@ -474,10 +519,19 @@ export class Timeline {
     const resizeHandle = e.target.closest('[data-resize]');
 
     if (clipEl && !resizeHandle) {
-      // Select + start drag
-      const clipId = clipEl.dataset.clipId;
+      const clipId  = clipEl.dataset.clipId;
       const trackId = clipEl.dataset.trackId;
       this._selectClip(clipId, trackId);
+
+      // Razor tool: split clip at click position
+      if (this._tool === 'razor') {
+        e.preventDefault();
+        const rect = this._lanesScroll.getBoundingClientRect();
+        const x = e.clientX - rect.left + this._scrollLeft;
+        const splitTime = Math.max(0, x / this._pxPerSec);
+        this._cmdSplitClip(clipId, splitTime);
+        return;
+      }
 
       if (this._tool !== 'pointer') return;
       e.preventDefault();
@@ -486,19 +540,36 @@ export class Timeline {
       const clip = this._findClip(clipId);
       if (!clip) return;
 
-      const rect = this._lanesScroll.getBoundingClientRect();
-      const startX = e.clientX - rect.left + this._scrollLeft;
+      const rect    = this._lanesScroll.getBoundingClientRect();
+      const startX  = e.clientX - rect.left + this._scrollLeft;
+      const startY  = e.clientY - rect.top;
+
+      // Ghost element for cross-track visual feedback
+      const clipRect = clipEl.getBoundingClientRect();
+      const ghost    = clipEl.cloneNode(true);
+      ghost.className = 'pm-tl-clip pm-tl-clip-ghost';
+      ghost.style.cssText = `
+        position:fixed; left:${clipRect.left}px; top:${clipRect.top}px;
+        width:${clipRect.width}px; height:${clipRect.height}px;
+        opacity:0.75; z-index:1000; pointer-events:none;
+      `;
+      document.body.appendChild(ghost);
+      clipEl.style.opacity = '0.35';
 
       this._drag = {
-        type: 'clip',
-        pointerId: e.pointerId,
+        type:           'clip',
+        pointerId:      e.pointerId,
         clipId,
         trackId,
-        origStartTime: clip.startTime,
-        mouseXAtStart: startX,
+        origTrackId:    trackId,
+        origStartTime:  clip.startTime,
+        mouseXAtStart:  startX,
+        mouseYAtStart:  startY,
         clipEl,
+        ghost,
+        ghostOffX:      e.clientX - clipRect.left,
+        ghostOffY:      e.clientY - clipRect.top,
       };
-      clipEl.classList.add('dragging');
       return;
     }
 
@@ -519,6 +590,7 @@ export class Timeline {
         side,
         origStartTime: clip.startTime,
         origDuration: clip.duration,
+        origTrimIn: clip.trimIn ?? 0,
         mouseXAtStart: e.clientX - rect.left + this._scrollLeft,
         clipEl: clipEl2,
       };
@@ -556,9 +628,17 @@ export class Timeline {
       const clip = this._findClip(this._drag.clipId);
       if (!clip) return;
       const newStart = Math.max(0, this._drag.origStartTime + deltaSec);
-      // Preview: move the clip div
       this._drag.clipEl.style.left = `${newStart * this._pxPerSec}px`;
-      clip._previewStartTime = newStart; // temp preview
+      clip._previewStartTime = newStart;
+      // Move fixed-position ghost with cursor
+      if (this._drag.ghost) {
+        this._drag.ghost.style.left = `${e.clientX - this._drag.ghostOffX}px`;
+        this._drag.ghost.style.top  = `${e.clientY - this._drag.ghostOffY}px`;
+      }
+      // Detect target track by cursor Y within lanes scroll area
+      const curY = e.clientY - rect.top + this._lanesScroll.scrollTop;
+      const hit = this._laneYMap.find((r) => curY >= r.top && curY < r.bottom);
+      if (hit) this._drag.trackId = hit.trackId;
     }
 
     if (this._drag.type === 'trim') {
@@ -568,6 +648,7 @@ export class Timeline {
         const newDur = Math.max(0.1, this._drag.origDuration + deltaSec);
         this._drag.clipEl.style.width = `${newDur * this._pxPerSec}px`;
         clip._previewDuration = newDur;
+        this._onSeek(clip.startTime + newDur);
       } else {
         const newStart = Math.min(this._drag.origStartTime + this._drag.origDuration - 0.1,
           Math.max(0, this._drag.origStartTime + deltaSec));
@@ -576,6 +657,7 @@ export class Timeline {
         this._drag.clipEl.style.width = `${Math.max(4, newDur * this._pxPerSec)}px`;
         clip._previewStartTime = newStart;
         clip._previewDuration = newDur;
+        this._onSeek(newStart);
       }
     }
   }
@@ -584,36 +666,72 @@ export class Timeline {
     if (!this._drag) return;
 
     if (this._drag.type === 'clip') {
-      const { clipId, origStartTime } = this._drag;
+      const { clipId, origStartTime, origTrackId } = this._drag;
+      const targetTrackId = this._drag.trackId;
       const clip = this._findClip(clipId);
-      if (clip && clip._previewStartTime !== undefined) {
-        const newStart = clip._previewStartTime;
+
+      // Clean up ghost + restore placeholder opacity
+      this._drag.ghost?.remove();
+      if (this._drag.clipEl) this._drag.clipEl.style.opacity = '';
+
+      if (clip) {
+        const newStart = clip._previewStartTime ?? origStartTime;
         delete clip._previewStartTime;
-        if (Math.abs(newStart - origStartTime) > 0.001) {
+        const changedTrack = targetTrackId !== origTrackId;
+        const moved = Math.abs(newStart - origStartTime) > 0.001;
+
+        if (changedTrack) {
+          // Snapshot-based command so undo is reliable across track arrays
+          const cmd = this._history.snapshotCommand('Move clip', (project) => {
+            const src = project.tracks.find((t) => t.id === origTrackId);
+            const dst = project.tracks.find((t) => t.id === targetTrackId);
+            const c   = src?.clips.find((c) => c.id === clipId);
+            if (src && dst && c) {
+              src.clips = src.clips.filter((x) => x.id !== clipId);
+              c.startTime = newStart;
+              dst.clips.push(c);
+            }
+          });
+          this._history.execute(cmd);
+          this._render();
+        } else if (moved) {
           this._history.execute({
             label: 'Move clip',
             execute: () => { clip.startTime = newStart; this._pm.markDirty(); },
             undo: () => { clip.startTime = origStartTime; this._pm.markDirty(); this._render(); },
           });
           this._render();
+        } else {
+          // No net change — reset div in case pointer-move shifted it slightly
+          if (this._drag.clipEl) {
+            this._drag.clipEl.style.left = `${origStartTime * this._pxPerSec}px`;
+          }
         }
       }
-      this._drag.clipEl?.classList.remove('dragging');
     }
 
     if (this._drag.type === 'trim') {
-      const { clipId, origStartTime, origDuration } = this._drag;
+      const { clipId, origStartTime, origDuration, origTrimIn, side } = this._drag;
       const clip = this._findClip(clipId);
       if (clip) {
-        const newStart = clip._previewStartTime ?? origStartTime;
-        const newDur = clip._previewDuration ?? origDuration;
+        const newStart  = clip._previewStartTime ?? origStartTime;
+        const newDur    = clip._previewDuration  ?? origDuration;
+        const newTrimIn = side === 'left'
+          ? origTrimIn + (newStart - origStartTime) * (clip.speed ?? 1)
+          : (clip.trimIn ?? 0);
         delete clip._previewStartTime;
         delete clip._previewDuration;
         if (Math.abs(newStart - origStartTime) > 0.001 || Math.abs(newDur - origDuration) > 0.001) {
           this._history.execute({
             label: 'Trim clip',
-            execute: () => { clip.startTime = newStart; clip.duration = newDur; this._pm.markDirty(); },
-            undo: () => { clip.startTime = origStartTime; clip.duration = origDuration; this._pm.markDirty(); this._render(); },
+            execute: () => {
+              clip.startTime = newStart; clip.duration = newDur; clip.trimIn = newTrimIn;
+              this._pm.markDirty();
+            },
+            undo: () => {
+              clip.startTime = origStartTime; clip.duration = origDuration; clip.trimIn = origTrimIn;
+              this._pm.markDirty(); this._render();
+            },
           });
           this._render();
         }
@@ -720,6 +838,32 @@ export class Timeline {
       },
       undo: () => {
         this._project.tracks.splice(idx, 0, track);
+        this._pm.markDirty(); this._render();
+      },
+    });
+  }
+
+  _cmdSplitClip(clipId, splitTime) {
+    if (!this._project) return;
+    const cmd = this._history.snapshotCommand('Split clip', (project) => {
+      splitClip(project, clipId, splitTime);
+    });
+    this._history.execute(cmd);
+    this._render();
+  }
+
+  _cmdAddClipFromAsset(track, asset, dropTime) {
+    if (!this._project) return;
+    const duration = asset.duration ?? 5;
+    let newClip = null;
+    this._history.execute({
+      label: 'Add clip',
+      execute: () => {
+        newClip = addClip(this._project, track.id, { assetId: asset.id, startTime: dropTime, duration });
+        this._pm.markDirty(); this._render();
+      },
+      undo: () => {
+        if (newClip) track.clips = track.clips.filter((c) => c.id !== newClip.id);
         this._pm.markDirty(); this._render();
       },
     });
@@ -861,6 +1005,18 @@ function injectStyles() {
     /* Empty state */
     .pm-tl-empty { display:flex; align-items:center; justify-content:center; flex:1;
       color:var(--text-dim); font-size:0.8rem; font-family:var(--font-mono); padding:16px; }
+
+    /* Keyframe diamond markers on clips */
+    .pm-tl-kf-mark { position:absolute; bottom:3px; width:6px; height:6px; background:#f1fa8c;
+      transform:translateX(-3px) rotate(45deg); pointer-events:none; z-index:2; }
+
+    /* Lane drop highlight when dragging asset from media library */
+    .pm-tl-lane-drop { outline:2px dashed var(--accent-peach); outline-offset:-2px;
+      background-color:rgba(255,140,105,.08) !important; }
+
+    /* Ghost clip element during cross-track drag */
+    .pm-tl-clip-ghost { cursor:grabbing !important;
+      box-shadow:0 4px 20px rgba(0,0,0,.6), 0 0 0 2px var(--accent-peach) !important; }
   `;
   document.head.appendChild(s);
 }
