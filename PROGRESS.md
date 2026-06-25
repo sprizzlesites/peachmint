@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 2 · step 2.12 · Chroma key + shape masks
+Phase 2 · step 2.13 · VFX shader library + open preset format + transitions
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -68,7 +68,7 @@ Phase 2 · step 2.12 · Chroma key + shape masks
 
 ### Phase 2 — Pro features (P1)
 - [x] 2.11 Color correction + .cube/.3dl LUT import
-- [ ] 2.12 Chroma key + shape masks
+- [x] 2.12 Chroma key + shape masks
 - [ ] 2.13 VFX shader library + open preset format + transitions
 - [ ] 2.14 Text + custom font import + cued static images
 - [ ] 2.15 Speed ramping + transparent WebM / GIF / PNG export
@@ -95,3 +95,4 @@ Phase 2 · step 2.12 · Chroma key + shape masks
 - 2026-06-25 session 7 — did: Phase 1.9 complete — shell.js: history.clear() on project open/close, * unsaved indicator (project:dirty/saved/autosaved wired), inline project rename (dblclick name→input), open dialog delete per row (<dialog> confirm, _confirmDelete helper), fixed _storage private access, CSS .pm-unsaved::after + .pm-name-edit + .pm-proj-info + .pm-proj-del + .btn-danger, sw.js bumped to v7 · stopped at: end of 1.9 · next: Phase 1.10 mobile UI shell
 - 2026-06-25 session 8 — did: Phase 1.10 complete — src/ui/mobile/shell.js (MobileShell: header+menu-sheet, canvas preview, touch transport, touch-scroll timeline with ruler/clips/playhead/tap-seek/clip-select, bottom tabs: Media library+import / Clip properties+delete / Export MP4 with progress, project dialogs, undo/redo keyboard shortcuts, injectStyles with full mobile CSS), app-shell.js updated to dynamically import mountMobileShell + removed placeholder, sw.js bumped to v8 · stopped at: end of Phase 1 · next: Phase 2.11 color correction + LUT
 - 2026-06-25 session 9 — did: Phase 2.11 complete — src/engine/lut.js (parseCube, parse3dl, detectLUTFormat), compositor.js (FRAG shader upgraded with sampler3D u_lut + int u_lut_enabled, uploadLUT/setActiveLUT/disposeLUT, dummy 1×1×1 LUT on TEXTURE1, drawSolid explicit lutEnabled=0), preview-engine.js (LUT tex cache per assetId, _resolveLUT, setActiveLUT per clip, _clearLUTs on setProject/dispose), export-engine.js (same LUT loading with per-export lutCache map, resolveLUT helper), inspector.js (storage param, lutRow HTML, _onImportLUT/_ingestLUT/_onClearLUT/_showError, LUT CSS), shell.js (storage: this._storage → Inspector), sw.js bumped to v9 with lut.js · stopped at: end of Phase 2.11 · next: Phase 2.12 chroma key + shape masks
+- 2026-06-25 session 10 — did: Phase 2.12 complete — compositor.js FRAG shader: chroma key (chroma-space distance, smoothstep alpha, u_chroma_enabled/color/threshold/smooth) + shape mask (SDF rect/ellipse, u_mask_type/center/size/feather/invert); drawClip sets all 9 new uniforms, drawSolid disables chroma+mask; inspector.js: Chroma Key section (enabled toggle, color picker, threshold/smoothness propRows) + Mask section (type select, x/y/w/h/feather propRows when active, invert toggle); _onChromaEnabledChange, _onChromaColorChange, _onMaskTypeChange, _onMaskInvertChange; hexToRgb/rgbToHex utilities; toggle/select/color-picker CSS · stopped at: end of Phase 2.12 · next: Phase 2.13 VFX shader library + transitions — src/engine/lut.js (parseCube, parse3dl, detectLUTFormat), compositor.js (FRAG shader upgraded with sampler3D u_lut + int u_lut_enabled, uploadLUT/setActiveLUT/disposeLUT, dummy 1×1×1 LUT on TEXTURE1, drawSolid explicit lutEnabled=0), preview-engine.js (LUT tex cache per assetId, _resolveLUT, setActiveLUT per clip, _clearLUTs on setProject/dispose), export-engine.js (same LUT loading with per-export lutCache map, resolveLUT helper), inspector.js (storage param, lutRow HTML, _onImportLUT/_ingestLUT/_onClearLUT/_showError, LUT CSS), shell.js (storage: this._storage → Inspector), sw.js bumped to v9 with lut.js · stopped at: end of Phase 2.11 · next: Phase 2.12 chroma key + shape masks

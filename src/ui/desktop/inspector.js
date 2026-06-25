@@ -102,6 +102,49 @@ export class Inspector {
       </div>
 
       <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Chroma Key</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Enabled</span>
+          <label class="pm-toggle">
+            <input type="checkbox" class="pm-chroma-enabled" ${p.chroma?.enabled ? 'checked' : ''}>
+            <span class="pm-toggle-track"></span>
+          </label>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Key Color</span>
+          <input type="color" class="pm-chroma-color" value="${rgbToHex(p.chroma?.color ?? [0, 1, 0])}">
+        </div>
+        ${propRow('Threshold',  'chroma.threshold', p.chroma?.threshold ?? 0.35, 0, 1, 0.01, hasKF('chroma.threshold'))}
+        ${propRow('Smoothness', 'chroma.smooth',    p.chroma?.smooth    ?? 0.1,  0, 1, 0.01, hasKF('chroma.smooth'))}
+      </div>
+
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Mask</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Type</span>
+          <select class="pm-mask-type pm-insp-select">
+            <option value="none"    ${(p.mask?.type ?? 'none') === 'none'    ? 'selected' : ''}>None</option>
+            <option value="rect"    ${(p.mask?.type ?? 'none') === 'rect'    ? 'selected' : ''}>Rectangle</option>
+            <option value="ellipse" ${(p.mask?.type ?? 'none') === 'ellipse' ? 'selected' : ''}>Ellipse</option>
+          </select>
+        </div>
+        ${(p.mask?.type && p.mask.type !== 'none') ? `
+          ${propRow('X',       'mask.x',       p.mask.x       ?? 0.5,  0,    1,    0.01,  hasKF('mask.x'))}
+          ${propRow('Y',       'mask.y',       p.mask.y       ?? 0.5,  0,    1,    0.01,  hasKF('mask.y'))}
+          ${propRow('Width',   'mask.w',       p.mask.w       ?? 0.5,  0.01, 2,    0.01,  hasKF('mask.w'))}
+          ${propRow('Height',  'mask.h',       p.mask.h       ?? 0.5,  0.01, 2,    0.01,  hasKF('mask.h'))}
+          ${propRow('Feather', 'mask.feather', p.mask.feather ?? 0.05, 0,    0.5,  0.001, hasKF('mask.feather'))}
+          <div class="pm-insp-row">
+            <span class="pm-insp-row-label">Invert</span>
+            <label class="pm-toggle">
+              <input type="checkbox" class="pm-mask-invert" ${p.mask?.invert ? 'checked' : ''}>
+              <span class="pm-toggle-track"></span>
+            </label>
+          </div>
+        ` : ''}
+      </div>
+
+      <div class="pm-insp-section">
         <div class="pm-insp-section-label">Keyframes</div>
         <div id="pm-insp-kf-list">${buildKfList(clip)}</div>
       </div>
@@ -125,6 +168,18 @@ export class Inspector {
     // Wire LUT buttons
     this._el.querySelector('#pm-insp-lut-import')?.addEventListener('click', () => this._onImportLUT());
     this._el.querySelector('#pm-insp-lut-clear')?.addEventListener('click',  () => this._onClearLUT());
+
+    // Wire chroma key controls
+    const chromaEnabledEl = this._el.querySelector('.pm-chroma-enabled');
+    chromaEnabledEl?.addEventListener('change', () => this._onChromaEnabledChange(chromaEnabledEl.checked));
+    const chromaColorEl = this._el.querySelector('.pm-chroma-color');
+    chromaColorEl?.addEventListener('change', () => this._onChromaColorChange(chromaColorEl.value));
+
+    // Wire mask controls
+    const maskTypeEl = this._el.querySelector('.pm-mask-type');
+    maskTypeEl?.addEventListener('change', () => this._onMaskTypeChange(maskTypeEl.value));
+    const maskInvertEl = this._el.querySelector('.pm-mask-invert');
+    maskInvertEl?.addEventListener('change', () => this._onMaskInvertChange(maskInvertEl.checked));
   }
 
   showTrack(track) {
@@ -203,6 +258,50 @@ export class Inspector {
         this._pm.markDirty();
         this._refreshKfList(clip);
       },
+    });
+  }
+
+  _onChromaEnabledChange(enabled) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const old = clip.properties.chroma?.enabled ?? false;
+    this._history.execute({
+      label: enabled ? 'Enable chroma key' : 'Disable chroma key',
+      execute: () => { (clip.properties.chroma ??= {}).enabled = enabled;  this._pm.markDirty(); },
+      undo:    () => { (clip.properties.chroma ??= {}).enabled = old;      this._pm.markDirty(); },
+    });
+  }
+
+  _onChromaColorChange(hex) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const color = hexToRgb(hex);
+    const old   = clip.properties.chroma?.color ?? [0, 1, 0];
+    this._history.execute({
+      label: 'Set chroma key color',
+      execute: () => { (clip.properties.chroma ??= {}).color = color; this._pm.markDirty(); },
+      undo:    () => { (clip.properties.chroma ??= {}).color = old;   this._pm.markDirty(); },
+    });
+  }
+
+  _onMaskTypeChange(type) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    this._history.snapshotCommand('Set mask type', () => {
+      (clip.properties.mask ??= {}).type = type;
+    });
+    this._pm.markDirty();
+    this.showClip(clip); // re-render so mask prop rows appear/disappear
+  }
+
+  _onMaskInvertChange(inverted) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const old = clip.properties.mask?.invert ?? false;
+    this._history.execute({
+      label: inverted ? 'Invert mask' : 'Un-invert mask',
+      execute: () => { (clip.properties.mask ??= {}).invert = inverted; this._pm.markDirty(); },
+      undo:    () => { (clip.properties.mask ??= {}).invert = old;      this._pm.markDirty(); },
     });
   }
 
@@ -407,6 +506,26 @@ function injectStyles() {
       font-size:0.65rem; padding:0 2px; border-radius:2px; }
     .pm-insp-kf-del:hover { background:var(--accent-err); color:#fff; }
 
+    /* Toggle switch */
+    .pm-toggle { display:inline-flex; align-items:center; cursor:pointer; }
+    .pm-toggle input { position:absolute; opacity:0; width:0; height:0; }
+    .pm-toggle-track { width:28px; height:15px; background:var(--border); border-radius:8px;
+      position:relative; transition:background 0.15s; flex-shrink:0; }
+    .pm-toggle input:checked + .pm-toggle-track { background:var(--accent-peach); }
+    .pm-toggle-track::after { content:''; position:absolute; width:11px; height:11px;
+      background:#fff; border-radius:50%; top:2px; left:2px; transition:transform 0.15s; }
+    .pm-toggle input:checked + .pm-toggle-track::after { transform:translateX(13px); }
+
+    /* Color picker */
+    .pm-chroma-color { width:36px; height:22px; padding:1px; border:1px solid var(--border);
+      border-radius:4px; cursor:pointer; background:var(--bg-base); }
+
+    /* Select */
+    .pm-insp-select { background:var(--bg-base); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:4px; padding:2px 4px;
+      font-size:0.72rem; outline:none; cursor:pointer; max-width:100px; }
+    .pm-insp-select:focus { border-color:var(--accent-purple); }
+
     /* LUT row */
     .pm-insp-lut-row { flex-direction:column; align-items:flex-start; gap:4px; padding:6px 12px; }
     .pm-insp-lut-controls { display:flex; align-items:center; gap:6px; width:100%; }
@@ -431,6 +550,20 @@ function formatSec(s) {
 
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function hexToRgb(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255,
+  ];
+}
+
+function rgbToHex(rgb) {
+  return '#' + (rgb ?? [0, 1, 0]).map((v) =>
+    Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')
+  ).join('');
 }
 
 function getPropValue(obj, path) {

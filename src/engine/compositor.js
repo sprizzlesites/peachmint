@@ -34,34 +34,72 @@ uniform sampler2D u_tex;
 uniform sampler3D u_lut;
 uniform int       u_lut_enabled;
 uniform float u_opacity;
-uniform float u_exposure;    // EV shift: 0 = no change
-uniform float u_contrast;    // -1..1: 0 = no change
-uniform float u_saturation;  // -1..1: 0 = no change
-uniform float u_temperature; // -1..1: 0 = no change (blue ↔ yellow)
-uniform float u_tint;        // -1..1: 0 = no change (green ↔ magenta)
+uniform float u_exposure;
+uniform float u_contrast;
+uniform float u_saturation;
+uniform float u_temperature;
+uniform float u_tint;
+// Chroma key
+uniform int   u_chroma_enabled;
+uniform vec3  u_chroma_color;
+uniform float u_chroma_threshold;
+uniform float u_chroma_smooth;
+// Shape mask
+uniform int   u_mask_type;    // 0=none 1=rect 2=ellipse
+uniform vec2  u_mask_center;  // UV position of mask center
+uniform vec2  u_mask_size;    // UV extent (width, height)
+uniform float u_mask_feather;
+uniform int   u_mask_invert;
 out vec4 fragColor;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 void main() {
   vec4 s = texture(u_tex, v_uv);
   vec3 c = s.rgb;
-  // Exposure
+
+  // Chroma key (on raw footage, before color correction)
+  if (u_chroma_enabled != 0) {
+    vec3 diff = c - u_chroma_color;
+    float ld = dot(diff, LUMA);
+    float chroma_dist = length(diff - ld * LUMA);
+    float sm = max(u_chroma_smooth, 0.001);
+    s.a *= smoothstep(u_chroma_threshold - sm, u_chroma_threshold + sm, chroma_dist);
+  }
+
+  // Color correction
   c *= pow(2.0, u_exposure);
-  // Contrast (pivot around 0.5)
   if (u_contrast != 0.0) c = clamp(0.5 + (c - 0.5) * (1.0 + u_contrast * 2.0), 0.0, 1.0);
-  // Saturation
   if (u_saturation != 0.0) {
     float lum = dot(c, LUMA);
     c = mix(vec3(lum), c, 1.0 + u_saturation);
   }
-  // Temperature (R/B shift)
   c.r = clamp(c.r + u_temperature * 0.15, 0.0, 1.0);
   c.b = clamp(c.b - u_temperature * 0.15, 0.0, 1.0);
-  // Tint (G shift)
   c.g = clamp(c.g - u_tint * 0.08, 0.0, 1.0);
   c = clamp(c, 0.0, 1.0);
-  // 3D LUT (applied after all other corrections)
+
+  // 3D LUT
   if (u_lut_enabled != 0) c = texture(u_lut, c).rgb;
-  fragColor = vec4(c, s.a * u_opacity);
+
+  vec4 out_color = vec4(c, s.a * u_opacity);
+
+  // Shape mask
+  if (u_mask_type != 0) {
+    float feather = max(u_mask_feather, 0.001);
+    vec2 uv_c = v_uv - u_mask_center;
+    float dist;
+    if (u_mask_type == 1) {
+      vec2 d = abs(uv_c) - u_mask_size * 0.5;
+      dist = max(d.x, d.y);
+    } else {
+      vec2 sc = uv_c / max(u_mask_size * 0.5, vec2(0.001));
+      dist = length(sc) - 1.0;
+    }
+    float shape = 1.0 - smoothstep(-feather, feather, dist);
+    if (u_mask_invert != 0) shape = 1.0 - shape;
+    out_color.a *= shape;
+  }
+
+  fragColor = out_color;
 }`;
 
 // ─── Compositor ───────────────────────────────────────────────────────────────
@@ -120,17 +158,30 @@ export class Compositor {
     // Cache uniform locations
     const p = this._program;
     this._uniforms = {
-      xform:       gl.getUniformLocation(p, 'u_xform'),
-      tex:         gl.getUniformLocation(p, 'u_tex'),
-      lut:         gl.getUniformLocation(p, 'u_lut'),
-      lutEnabled:  gl.getUniformLocation(p, 'u_lut_enabled'),
-      opacity:     gl.getUniformLocation(p, 'u_opacity'),
-      exposure:    gl.getUniformLocation(p, 'u_exposure'),
-      contrast:    gl.getUniformLocation(p, 'u_contrast'),
-      saturation:  gl.getUniformLocation(p, 'u_saturation'),
-      temperature: gl.getUniformLocation(p, 'u_temperature'),
-      tint:        gl.getUniformLocation(p, 'u_tint'),
+      xform:          gl.getUniformLocation(p, 'u_xform'),
+      tex:            gl.getUniformLocation(p, 'u_tex'),
+      lut:            gl.getUniformLocation(p, 'u_lut'),
+      lutEnabled:     gl.getUniformLocation(p, 'u_lut_enabled'),
+      opacity:        gl.getUniformLocation(p, 'u_opacity'),
+      exposure:       gl.getUniformLocation(p, 'u_exposure'),
+      contrast:       gl.getUniformLocation(p, 'u_contrast'),
+      saturation:     gl.getUniformLocation(p, 'u_saturation'),
+      temperature:    gl.getUniformLocation(p, 'u_temperature'),
+      tint:           gl.getUniformLocation(p, 'u_tint'),
+      chromaEnabled:  gl.getUniformLocation(p, 'u_chroma_enabled'),
+      chromaColor:    gl.getUniformLocation(p, 'u_chroma_color'),
+      chromaThresh:   gl.getUniformLocation(p, 'u_chroma_threshold'),
+      chromaSmooth:   gl.getUniformLocation(p, 'u_chroma_smooth'),
+      maskType:       gl.getUniformLocation(p, 'u_mask_type'),
+      maskCenter:     gl.getUniformLocation(p, 'u_mask_center'),
+      maskSize:       gl.getUniformLocation(p, 'u_mask_size'),
+      maskFeather:    gl.getUniformLocation(p, 'u_mask_feather'),
+      maskInvert:     gl.getUniformLocation(p, 'u_mask_invert'),
     };
+
+    // Set initial disabled state for chroma/mask (uniforms default to 0 in GL but be explicit)
+    gl.uniform1i(this._uniforms.chromaEnabled, 0);
+    gl.uniform1i(this._uniforms.maskType, 0);
 
     // Dummy 1×1×1 LUT bound to unit 1 so the sampler3D is always valid
     this._dummyLUT = gl.createTexture();
@@ -213,14 +264,30 @@ export class Compositor {
     gl.uniform1i(this._uniforms.lut, 1);
     gl.uniform1i(this._uniforms.lutEnabled, this._activeLUT ? 1 : 0);
 
-    // Set color/compositing uniforms
-    const col = props?.color ?? {};
+    // Color / compositing uniforms
+    const col    = props?.color  ?? {};
+    const chroma = props?.chroma ?? {};
+    const mask   = props?.mask   ?? {};
     gl.uniform1f(this._uniforms.opacity,     props?.opacity     ?? 1);
     gl.uniform1f(this._uniforms.exposure,    col.exposure       ?? 0);
     gl.uniform1f(this._uniforms.contrast,    col.contrast       ?? 0);
     gl.uniform1f(this._uniforms.saturation,  col.saturation     ?? 0);
     gl.uniform1f(this._uniforms.temperature, col.temperature    ?? 0);
     gl.uniform1f(this._uniforms.tint,        col.tint           ?? 0);
+
+    // Chroma key uniforms
+    gl.uniform1i(this._uniforms.chromaEnabled, chroma.enabled ? 1 : 0);
+    gl.uniform3fv(this._uniforms.chromaColor,  chroma.color ?? [0, 1, 0]);
+    gl.uniform1f(this._uniforms.chromaThresh,  chroma.threshold ?? 0.35);
+    gl.uniform1f(this._uniforms.chromaSmooth,  chroma.smooth    ?? 0.1);
+
+    // Shape mask uniforms
+    const maskTypeInt = mask.type === 'rect' ? 1 : mask.type === 'ellipse' ? 2 : 0;
+    gl.uniform1i(this._uniforms.maskType,    maskTypeInt);
+    gl.uniform2fv(this._uniforms.maskCenter, [mask.x ?? 0.5, mask.y ?? 0.5]);
+    gl.uniform2fv(this._uniforms.maskSize,   [mask.w ?? 0.5, mask.h ?? 0.5]);
+    gl.uniform1f(this._uniforms.maskFeather, mask.feather ?? 0.05);
+    gl.uniform1i(this._uniforms.maskInvert,  mask.invert  ? 1  : 0);
 
     // Build + set transform matrix
     const xform = buildTransform(props?.transform, naturalW, naturalH, this._canvasW, this._canvasH);
@@ -252,7 +319,9 @@ export class Compositor {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_3D, this._dummyLUT);
     gl.uniform1i(this._uniforms.lut, 1);
-    gl.uniform1i(this._uniforms.lutEnabled, 0);
+    gl.uniform1i(this._uniforms.lutEnabled,    0);
+    gl.uniform1i(this._uniforms.chromaEnabled, 0);
+    gl.uniform1i(this._uniforms.maskType,      0);
     gl.uniform1f(this._uniforms.opacity, 1);
     gl.uniform1f(this._uniforms.exposure, 0);
     gl.uniform1f(this._uniforms.contrast, 0);
