@@ -1,0 +1,59 @@
+# PeachMint — Third-Party Notices
+
+PeachMint is MIT-licensed software. This file attributes all third-party
+components included or used at runtime, with their respective licenses.
+
+---
+
+## Runtime dependencies
+
+### mp4box.js
+- License: BSD 3-Clause
+- Copyright: (c) 2012-present mp4box.js contributors
+- Source: https://github.com/gpac/mp4box.js
+
+### mp4-muxer
+- License: MIT
+- Copyright: (c) 2023-present mp4-muxer contributors
+- Source: https://github.com/nickcoutsos/mp4-muxer
+
+### webm-muxer
+- License: MIT
+- Copyright: (c) 2023-present webm-muxer contributors
+- Source: https://github.com/nickcoutsos/webm-muxer
+
+### MediaPipe (optional, Phase 2)
+- License: Apache License 2.0
+- Copyright: (c) Google LLC
+- Source: https://github.com/google-ai-edge/mediapipe
+- Note: Loads WASM blobs from jsDelivr / Google's CDN
+
+---
+
+## Optional components (not enabled by default)
+
+### ffmpeg.wasm (optional export fallback)
+- License: LGPL 2.1 (ffmpeg.wasm wrapper: MIT; FFmpeg core: LGPL/GPL depending on build flags)
+- Copyright: (c) 2019-present ffmpeg.wasm contributors; FFmpeg project contributors
+- Source: https://github.com/ffmpegwasm/ffmpeg.wasm
+- Note: PeachMint treats ffmpeg.wasm as an opt-in toggle. When enabled, users
+  acknowledge the LGPL/GPL terms apply to the FFmpeg code running in their browser.
+  PeachMint does NOT statically link or redistribute FFmpeg binaries — they are
+  loaded on demand from a CDN. If you self-host the ffmpeg.wasm build, you must
+  preserve all LGPL/GPL notices and offer the corresponding LGPL/GPL source.
+
+### coi-serviceworker (optional, required by ffmpeg.wasm multithreaded)
+- License: MIT
+- Copyright: (c) 2021-present coi-serviceworker contributors
+- Source: https://github.com/gzuidhof/coi-serviceworker
+
+---
+
+## Disclaimer
+
+PeachMint processes all media entirely on the user's device. No media, project data,
+or personal information is transmitted to any server. Users are responsible for
+ensuring they hold the rights to any media, fonts, or LUT files they import.
+
+This file is not legal advice. Maintainers should review each dependency's license
+before release, especially if distributing self-hosted builds.

@@ -1,0 +1,30 @@
+{
+  "name": "PeachMint Video Editor",
+  "short_name": "PeachMint",
+  "description": "Free, open-source, fully client-side browser video editor. No uploads. No accounts. Your media never leaves your device.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#1a1a1a",
+  "background_color": "#0f0f0f",
+  "lang": "en",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "New Project",
+      "short_name": "New",
+      "description": "Start a new video project",
+      "url": "/?action=new"
+    }
+  ]
+}

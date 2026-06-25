@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="PeachMint — Free, open-source, fully client-side browser video editor. No uploads. No accounts. Your media never leaves your device.">
+  <meta name="theme-color" content="#1a1a1a">
+  <meta name="color-scheme" content="dark">
+
+  <!-- PWA / installable -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="PeachMint">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="PeachMint Video Editor">
+  <meta property="og:description" content="Free, open-source browser video editor. No uploads. No accounts.">
+  <meta property="og:type" content="website">
+
+  <title>PeachMint Video Editor</title>
+
+  <style>
+    /* ─── Reset & tokens ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base:     #0f0f13;
+      --bg-surface:  #181820;
+      --bg-panel:    #13131a;
+      --bg-hover:    #1e1e2a;
+      --border:      #2d2d3e;
+      --border-hi:   #44475a;
+      --text-primary:#f8f8f2;
+      --text-muted:  #6272a4;
+      --text-dim:    #44475a;
+      --accent-peach:#ff8c69;
+      --accent-mint: #50fa7b;
+      --accent-blue: #8be9fd;
+      --accent-purple:#bd93f9;
+      --accent-warn: #ffb86c;
+      --accent-err:  #ff5555;
+      --font-mono:   'JetBrains Mono', 'Fira Mono', 'Consolas', 'Menlo', monospace;
+      --font-ui:     system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --radius:      6px;
+      --radius-lg:   10px;
+      --shadow:      0 4px 24px #00000066;
+    }
+
+    html, body {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ─── App root ───────────────────────────────────────────────────── */
+    #app-root {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ─── Loading screen ─────────────────────────────────────────────── */
+    #loading-screen {
+      position: fixed;
+      inset: 0;
+      background: var(--bg-base);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      transition: opacity 0.3s ease;
+    }
+    #loading-screen.hidden { opacity: 0; pointer-events: none; }
+    .loading-logo {
+      font-size: 3rem;
+      margin-bottom: 12px;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .loading-name {
+      font-family: var(--font-mono);
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--accent-peach);
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .loading-sub {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+    .loading-bar {
+      width: 200px;
+      height: 2px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .loading-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-peach), var(--accent-mint));
+      border-radius: 2px;
+      animation: loading-sweep 1.2s ease-in-out infinite;
+    }
+
+    /* ─── Topbar ─────────────────────────────────────────────────────── */
+    .pm-topbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 16px;
+      height: 40px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+    .pm-brand {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--accent-peach);
+      letter-spacing: 0.04em;
+      margin-right: 8px;
+      -webkit-app-region: no-drag;
+    }
+    .pm-menu {
+      display: flex;
+      gap: 2px;
+      flex: 1;
+      -webkit-app-region: no-drag;
+    }
+    .pm-menu-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: var(--radius);
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+    .pm-menu-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .pm-menu-btn:focus-visible { outline: 2px solid var(--accent-purple); outline-offset: 2px; }
+    .pm-quota {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      margin-left: auto;
+      -webkit-app-region: no-drag;
+    }
+
+    /* ─── Workspace ──────────────────────────────────────────────────── */
+    .pm-desktop-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+    }
+    .pm-workspace {
+      display: grid;
+      grid-template-columns: 220px 1fr 220px;
+      flex: 1;
+      overflow: hidden;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ─── Panels ─────────────────────────────────────────────────────── */
+    .pm-panel {
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .pm-panel-right { border-right: none; border-left: 1px solid var(--border); }
+    .pm-panel-label {
+      padding: 8px 12px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .pm-placeholder-content {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    /* ─── Preview ────────────────────────────────────────────────────── */
+    .pm-preview-area {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-base);
+      gap: 12px;
+      padding: 16px;
+      overflow: hidden;
+    }
+    .pm-canvas-wrap {
+      position: relative;
+      max-width: 100%;
+      max-height: calc(100% - 48px);
+      aspect-ratio: 16/9;
+      background: #000;
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    #pm-preview {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .pm-canvas-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pm-canvas-label {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .pm-transport {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pm-btn-transport {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      font-size: 0.75rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pm-btn-transport:hover { background: var(--bg-hover); border-color: var(--border-hi); }
+    .pm-btn-transport:focus-visible { outline: 2px solid var(--accent-purple); }
+    .pm-timecode {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--accent-blue);
+      min-width: 110px;
+    }
+
+    /* ─── Timeline ───────────────────────────────────────────────────── */
+    .pm-timeline-area {
+      height: 200px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pm-timeline-placeholder {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    /* ─── Status bar ─────────────────────────────────────────────────── */
+    .pm-statusbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+      height: 24px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+    .pm-statusbar-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .pm-statusbar-link:hover { color: var(--accent-peach); }
+    .pm-ui-toggle {
+      margin-left: auto;
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+    .pm-ui-toggle:hover { color: var(--text-muted); }
+
+    /* ─── Mobile shell ───────────────────────────────────────────────── */
+    .pm-mobile-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 100%;
+    }
+    .pm-mobile-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .pm-mobile-preview {
+      flex: 1;
+      background: #000;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .pm-mobile-preview canvas { max-width: 100%; max-height: 100%; }
+    .pm-mobile-preview-placeholder {
+      position: absolute;
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+    }
+    .pm-mobile-transport {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .pm-mobile-transport-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--bg-hover);
+      color: var(--text-primary);
+      font-size: 1rem;
+      cursor: pointer;
+      touch-action: manipulation;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pm-mobile-play {
+      width: 52px;
+      height: 52px;
+      font-size: 1.2rem;
+      background: var(--accent-peach);
+      color: #000;
+      border-color: var(--accent-peach);
+    }
+    .pm-mobile-timeline {
+      height: 140px;
+      background: var(--bg-panel);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pm-mobile-bottombar {
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      padding: 8px 0;
+      padding-bottom: max(8px, env(safe-area-inset-bottom));
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .pm-mobile-tab {
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius);
+      border: none;
+      background: transparent;
+      font-size: 1.4rem;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .pm-mobile-tab:active { background: var(--bg-hover); }
+    .pm-icon-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      background: transparent;
+      color: var(--text-primary);
+      font-size: 1.2rem;
+      cursor: pointer;
+      touch-action: manipulation;
+      border-radius: var(--radius);
+    }
+    .pm-icon-btn:hover { background: var(--bg-hover); }
+
+    /* ─── Banner ─────────────────────────────────────────────────────── */
+    .pm-banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 8888;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.8rem;
+    }
+    .pm-banner-warn { background: var(--accent-warn); color: #181820; }
+    .pm-banner-err  { background: var(--accent-err); color: #fff; }
+    .pm-banner button { background: none; border: none; font-size: 1.1rem; cursor: pointer; opacity: 0.7; }
+
+    /* ─── Crash recovery dialog ──────────────────────────────────────── */
+    dialog[aria-labelledby="rec-title"] {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      max-width: 420px;
+      width: 90vw;
+      font-family: var(--font-ui);
+    }
+    dialog[aria-labelledby="rec-title"]::backdrop { background: rgba(0,0,0,.75); }
+    dialog[aria-labelledby="rec-title"] h2 { margin-bottom: 12px; font-size: 1rem; }
+    dialog[aria-labelledby="rec-title"] p { color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; }
+    dialog[aria-labelledby="rec-title"] strong { color: var(--text-primary); }
+
+    /* ─── Common button styles ───────────────────────────────────────── */
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border-hi);
+      color: var(--text-muted);
+      border-radius: var(--radius);
+      padding: 8px 16px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+    .btn-ghost:hover { border-color: var(--text-muted); color: var(--text-primary); }
+    .btn-ghost:focus-visible { outline: 2px solid var(--accent-purple); outline-offset: 2px; }
+    .btn-primary {
+      background: var(--accent-peach);
+      border: none;
+      color: #181820;
+      border-radius: var(--radius);
+      padding: 8px 20px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+    .btn-primary:hover { background: #ffaa88; }
+    .btn-primary:focus-visible { outline: 2px solid var(--accent-purple); outline-offset: 2px; }
+
+    /* ─── Animations ─────────────────────────────────────────────────── */
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+    @keyframes loading-sweep {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(400%); }
+    }
+
+    /* ─── Accessibility ──────────────────────────────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      .loading-logo { animation: none; }
+      .loading-bar-fill { animation: none; background: var(--accent-peach); }
+      * { transition-duration: 0ms !important; }
+    }
+
+    /* ─── Scrollbar ──────────────────────────────────────────────────── */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-hi) var(--bg-surface);
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-surface); }
+    ::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+
+    /* ─── No-script fallback ─────────────────────────────────────────── */
+    noscript {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      text-align: center;
+      padding: 24px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+  </style>
+</head>
+<body>
+  <noscript>
+    PeachMint requires JavaScript. Please enable it in your browser settings.
+  </noscript>
+
+  <!-- Loading screen shown while JS bootstraps -->
+  <div id="loading-screen" aria-live="polite" aria-label="Loading PeachMint">
+    <div class="loading-logo" aria-hidden="true">🍑🌿</div>
+    <div class="loading-name">PeachMint</div>
+    <div class="loading-sub">Browser Video Editor</div>
+    <div class="loading-bar" role="progressbar" aria-label="Loading">
+      <div class="loading-bar-fill"></div>
+    </div>
+  </div>
+
+  <!-- App root — filled by app-shell.js -->
+  <div id="app-root" role="application" aria-label="PeachMint Video Editor"></div>
+
+  <script type="module">
+    import { boot } from '/src/ui/app-shell.js';
+
+    async function main() {
+      try {
+        await boot();
+      } catch (err) {
+        console.error('PeachMint boot error:', err);
+        showBootError(err);
+      } finally {
+        // Hide loading screen
+        const ls = document.getElementById('loading-screen');
+        if (ls) { ls.classList.add('hidden'); setTimeout(() => ls.remove(), 400); }
+      }
+    }
+
+    function showBootError(err) {
+      const root = document.getElementById('app-root');
+      if (root) root.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px;padding:24px;text-align:center;font-family:monospace;color:#ff5555">
+          <div style="font-size:2rem">⚠️</div>
+          <div style="font-size:1rem;color:#f8f8f2">PeachMint failed to start</div>
+          <div style="font-size:0.8rem;color:#6272a4;max-width:480px">${err?.message ?? 'Unknown error'}</div>
+          <button onclick="location.reload()" style="margin-top:8px;padding:8px 20px;background:#ff8c69;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:0.85rem">Reload</button>
+        </div>
+      `;
+    }
+
+    main();
+  </script>
+</body>
+</html>
