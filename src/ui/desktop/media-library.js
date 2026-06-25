@@ -1,15 +1,25 @@
 /**
  * media-library.js — Left-panel media library
  *
- * Phase 1.4: Shows project assets, has import button (wired in Phase 1.6).
- * Phase 1.6: Full import (drag-drop, file picker, WebCodecs probe).
+ * Phase 1.5: Full file import (file picker + drag-drop from desktop),
+ *            media probing, OPFS storage, asset registration, and
+ *            quick "Add to Timeline" to demo the preview pipeline.
+ * Phase 1.6: Drag-from-library → timeline drop (full clip placement UI).
  */
 
+import { addAsset, addTrack, addClip } from '../../engine/edl.js';
+
 export class MediaLibrary {
-  constructor(container, { pm, history }) {
+  /**
+   * @param {HTMLElement} container
+   * @param {{ pm, history, storage, onProjectChanged }} opts
+   */
+  constructor(container, { pm, history, storage, onProjectChanged }) {
     this._el = container;
     this._pm = pm;
     this._history = history;
+    this._storage = storage;
+    this._onProjectChanged = onProjectChanged ?? (() => {});
     this._project = null;
     this._mount();
   }
@@ -21,7 +31,7 @@ export class MediaLibrary {
         <div class="pm-lib-header">
           <span class="pm-lib-title">Media Library</span>
           <button class="pm-lib-import-btn" id="pm-lib-import"
-                  title="Import media (Phase 1.6)" aria-label="Import media files" disabled>
+                  title="Import media files" aria-label="Import media files" disabled>
             + Import
           </button>
         </div>
@@ -33,21 +43,39 @@ export class MediaLibrary {
           <div class="pm-lib-empty" id="pm-lib-empty">
             <div class="pm-lib-empty-icon" aria-hidden="true">📂</div>
             <p>No media imported yet.</p>
-            <p class="pm-lib-empty-sub">Import will be available in Phase 1.6.</p>
+            <p class="pm-lib-empty-sub">Click <strong>+ Import</strong> or drag files here.</p>
           </div>
         </div>
         <div class="pm-lib-drop-hint" id="pm-lib-drop" aria-hidden="true">
           Drop files here to import
         </div>
+        <div class="pm-lib-progress" id="pm-lib-progress" aria-live="polite" style="display:none">
+          <span class="pm-lib-progress-spinner" aria-hidden="true">⏳</span>
+          <span id="pm-lib-progress-text">Importing…</span>
+        </div>
       </div>
     `;
 
-    this._listEl = this._el.querySelector('#pm-lib-list');
-    this._emptyEl = this._el.querySelector('#pm-lib-empty');
+    this._listEl     = this._el.querySelector('#pm-lib-list');
+    this._emptyEl    = this._el.querySelector('#pm-lib-empty');
+    this._progressEl = this._el.querySelector('#pm-lib-progress');
+    this._progressTx = this._el.querySelector('#pm-lib-progress-text');
 
-    // Phase 1.6: wire import button + drag-drop
+    // Hidden file picker (no visible input, triggered programmatically)
+    this._filePicker = document.createElement('input');
+    this._filePicker.type = 'file';
+    this._filePicker.accept = 'video/*,audio/*,image/*';
+    this._filePicker.multiple = true;
+    this._filePicker.style.display = 'none';
+    this._el.appendChild(this._filePicker);
+    this._filePicker.addEventListener('change', () => {
+      if (this._filePicker.files?.length) this._importFiles(this._filePicker.files);
+      this._filePicker.value = ''; // reset so same file can be re-picked
+    });
+
+    // Import button → open file picker
     this._el.querySelector('#pm-lib-import')?.addEventListener('click', () => {
-      this._showImportComingSoon();
+      this._filePicker.click();
     });
 
     // Search filter
@@ -55,18 +83,27 @@ export class MediaLibrary {
       this._renderList(e.target.value.toLowerCase());
     });
 
-    // Drag-over hint
+    // Drag-over hint (system files dragged from OS)
     this._el.addEventListener('dragover', (e) => {
       e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
       this._el.querySelector('#pm-lib-drop')?.classList.add('visible');
     });
-    this._el.addEventListener('dragleave', () => {
-      this._el.querySelector('#pm-lib-drop')?.classList.remove('visible');
+    this._el.addEventListener('dragleave', (e) => {
+      // Only hide if leaving the library panel (not just moving between children)
+      if (!this._el.contains(e.relatedTarget)) {
+        this._el.querySelector('#pm-lib-drop')?.classList.remove('visible');
+      }
     });
     this._el.addEventListener('drop', (e) => {
       e.preventDefault();
       this._el.querySelector('#pm-lib-drop')?.classList.remove('visible');
-      this._showImportComingSoon();
+      const files = e.dataTransfer?.files;
+      if (files?.length && this._project) {
+        this._importFiles(files);
+      } else if (!this._project) {
+        this._showNoProjectBanner();
+      }
     });
   }
 
@@ -75,9 +112,87 @@ export class MediaLibrary {
   setProject(project) {
     this._project = project;
     this._renderList('');
-    // Enable import button when project is open
     const btn = this._el.querySelector('#pm-lib-import');
-    if (btn) btn.disabled = false;
+    if (btn) btn.disabled = !project;
+  }
+
+  // ─── Import ──────────────────────────────────────────────────────────────────
+
+  async _importFiles(fileList) {
+    if (!this._project || !this._storage) return;
+    const files = [...fileList].filter((f) => {
+      const t = f.type;
+      return t.startsWith('video/') || t.startsWith('audio/') || t.startsWith('image/');
+    });
+    if (!files.length) return;
+
+    this._setProgress(true, `Importing 0 / ${files.length}…`);
+    let imported = 0;
+
+    for (const file of files) {
+      try {
+        this._setProgress(true, `Importing "${file.name}" (${imported + 1} / ${files.length})…`);
+
+        // Probe metadata before reading the full buffer
+        const meta = await probeFile(file);
+
+        // Read file into ArrayBuffer and write to OPFS
+        const buf = await file.arrayBuffer();
+        const storageKey = await this._storage.writeMedia(file.name, buf);
+
+        // Register as EDL asset (direct mutation, no undo — import is not typically undoable)
+        const asset = addAsset(this._project, {
+          name: file.name,
+          type: meta.type,
+          mimeType: file.type || 'application/octet-stream',
+          width: meta.width,
+          height: meta.height,
+          duration: meta.duration,
+          storageKey,
+        });
+
+        this._pm.markDirty();
+        imported++;
+        this._renderList(this._currentFilter());
+      } catch (err) {
+        console.error('Import failed for', file.name, err);
+        this._showError(`Failed to import "${file.name}": ${err.message}`);
+      }
+    }
+
+    this._setProgress(false);
+    if (imported > 0) {
+      this._renderList(this._currentFilter());
+    }
+  }
+
+  // ─── Add to Timeline ─────────────────────────────────────────────────────────
+
+  _addToTimeline(asset) {
+    if (!this._project) return;
+    const targetType = asset.type === 'audio' ? 'audio' : 'video';
+
+    const cmd = this._history.snapshotCommand(`Add "${asset.name}" to timeline`, (proj) => {
+      // Find or create a track of the right type
+      let track = proj.tracks.find((t) => t.type === targetType);
+      if (!track) track = addTrack(proj, { type: targetType });
+
+      // Append after the last clip on this track
+      let endTime = 0;
+      for (const c of track.clips) endTime = Math.max(endTime, c.startTime + c.duration);
+
+      addClip(proj, track.id, {
+        assetId: asset.id,
+        startTime: endTime,
+        duration: asset.duration || 5,
+        trimIn: 0,
+        trimOut: asset.duration || 5,
+        speed: 1,
+      });
+    });
+
+    this._history.execute(cmd);
+    this._onProjectChanged();
   }
 
   // ─── Render ──────────────────────────────────────────────────────────────────
@@ -90,10 +205,9 @@ export class MediaLibrary {
 
     this._emptyEl.style.display = filtered.length ? 'none' : 'flex';
 
-    // Remove old asset rows
     this._listEl.querySelectorAll('.pm-lib-asset').forEach((el) => el.remove());
 
-    filtered.forEach((asset) => {
+    for (const asset of filtered) {
       const el = document.createElement('div');
       el.className = 'pm-lib-asset';
       el.setAttribute('role', 'listitem');
@@ -105,14 +219,21 @@ export class MediaLibrary {
           <span class="pm-lib-asset-name" title="${escHtml(asset.name ?? '')}">${escHtml(asset.name ?? 'Untitled')}</span>
           <span class="pm-lib-asset-meta">${assetMeta(asset)}</span>
         </div>
+        <button class="pm-lib-asset-add" data-asset-id="${escHtml(asset.id)}"
+                title="Add to timeline" aria-label="Add ${escHtml(asset.name ?? 'asset')} to timeline">+</button>
         <button class="pm-lib-asset-del" data-asset-id="${escHtml(asset.id)}"
                 title="Remove asset" aria-label="Remove ${escHtml(asset.name ?? 'asset')}">✕</button>
       `;
 
-      // Drag to timeline (Phase 1.6 will complete this)
+      // Drag to timeline (Phase 1.6 will complete drop handling on the timeline side)
       el.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('application/peachmint-asset', asset.id);
         e.dataTransfer.effectAllowed = 'copy';
+      });
+
+      el.querySelector('.pm-lib-asset-add')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._addToTimeline(asset);
       });
 
       el.querySelector('.pm-lib-asset-del')?.addEventListener('click', (e) => {
@@ -121,7 +242,11 @@ export class MediaLibrary {
       });
 
       this._listEl.appendChild(el);
-    });
+    }
+  }
+
+  _currentFilter() {
+    return (this._el.querySelector('#pm-lib-search')?.value ?? '').toLowerCase();
   }
 
   _removeAsset(assetId) {
@@ -134,37 +259,76 @@ export class MediaLibrary {
       execute: () => {
         this._project.assets.splice(idx, 1);
         this._pm.markDirty();
-        this._renderList('');
+        this._renderList(this._currentFilter());
       },
       undo: () => {
         this._project.assets.splice(idx, 0, asset);
         this._pm.markDirty();
-        this._renderList('');
+        this._renderList(this._currentFilter());
       },
     });
   }
 
-  _showImportComingSoon() {
-    const d = document.createElement('dialog');
-    d.setAttribute('aria-modal', 'true');
-    d.setAttribute('aria-labelledby', 'imp-title');
-    d.innerHTML = `
-      <h2 id="imp-title" style="margin:0 0 12px;font-size:1rem">Media Import — Phase 1.6</h2>
-      <p style="color:var(--text-muted);font-size:0.85rem;line-height:1.6">
-        Full media import (file picker, drag-and-drop, WebCodecs probe, OPFS storage)
-        is coming in Phase 1.6.
-        <br><br>
-        The engine storage, EDL model, and timeline UI are already wired up and ready to receive clips.
-      </p>
-      <div style="text-align:right;margin-top:16px">
-        <button class="btn-primary" autofocus>Got it</button>
-      </div>
-    `;
-    document.body.appendChild(d);
-    d.showModal();
-    d.querySelector('button').addEventListener('click', () => { d.close(); d.remove(); });
-    d.addEventListener('keydown', (e) => { if (e.key === 'Escape') { d.close(); d.remove(); } });
+  // ─── UI helpers ──────────────────────────────────────────────────────────────
+
+  _setProgress(visible, text = '') {
+    this._progressEl.style.display = visible ? 'flex' : 'none';
+    if (text) this._progressTx.textContent = text;
   }
+
+  _showError(msg) {
+    const banner = document.createElement('div');
+    banner.className = 'pm-lib-error';
+    banner.setAttribute('role', 'alert');
+    banner.innerHTML = `${escHtml(msg)} <button aria-label="Dismiss" class="pm-lib-error-close">×</button>`;
+    banner.querySelector('button').addEventListener('click', () => banner.remove());
+    this._el.querySelector('.pm-lib-root').prepend(banner);
+    setTimeout(() => banner.remove(), 6000);
+  }
+
+  _showNoProjectBanner() {
+    this._showError('Open or create a project first to import media.');
+  }
+}
+
+// ─── File probe ───────────────────────────────────────────────────────────────
+
+/**
+ * Probe a File's type, resolution, and duration without reading the full buffer.
+ * @param {File} file
+ * @returns {Promise<{ type: string, width: number, height: number, duration: number }>}
+ */
+function probeFile(file) {
+  return new Promise((resolve) => {
+    const mime = file.type || '';
+    const type = mime.startsWith('video/') ? 'video'
+               : mime.startsWith('audio/') ? 'audio'
+               : mime.startsWith('image/') ? 'image'
+               : 'video'; // fallback
+
+    const url = URL.createObjectURL(file);
+    const done = (width, height, duration) => { URL.revokeObjectURL(url); resolve({ type, width, height, duration }); };
+
+    if (type === 'image') {
+      const img = new Image();
+      img.addEventListener('load',  () => done(img.naturalWidth, img.naturalHeight, 0), { once: true });
+      img.addEventListener('error', () => done(0, 0, 0), { once: true });
+      img.src = url;
+    } else if (type === 'audio') {
+      const aud = new Audio();
+      aud.preload = 'metadata';
+      aud.addEventListener('loadedmetadata', () => done(0, 0, isFinite(aud.duration) ? aud.duration : 0), { once: true });
+      aud.addEventListener('error', () => done(0, 0, 0), { once: true });
+      aud.src = url;
+    } else {
+      const vid = document.createElement('video');
+      vid.preload = 'metadata';
+      vid.muted = true;
+      vid.addEventListener('loadedmetadata', () => done(vid.videoWidth, vid.videoHeight, isFinite(vid.duration) ? vid.duration : 0), { once: true });
+      vid.addEventListener('error', () => done(0, 0, 0), { once: true });
+      vid.src = url;
+    }
+  });
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -189,32 +353,48 @@ function injectStyles() {
     .pm-lib-search { padding:6px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
     .pm-lib-search-input { width:100%; background:var(--bg-base); border:1px solid var(--border);
       color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:0.78rem;
-      outline:none; font-family:var(--font-ui); }
+      outline:none; font-family:var(--font-ui); box-sizing:border-box; }
     .pm-lib-search-input:focus { border-color:var(--accent-purple); }
     .pm-lib-list { flex:1; overflow-y:auto; }
     .pm-lib-empty { display:flex; flex-direction:column; align-items:center;
       justify-content:center; height:100%; gap:8px; padding:20px; text-align:center; }
     .pm-lib-empty-icon { font-size:2rem; opacity:0.4; }
     .pm-lib-empty p { margin:0; font-size:0.78rem; color:var(--text-dim); line-height:1.5; }
-    .pm-lib-empty-sub { font-size:0.72rem !important; color:var(--text-dim) !important; }
+    .pm-lib-empty-sub { font-size:0.72rem !important; }
+
     .pm-lib-asset { display:flex; align-items:center; gap:8px; padding:6px 10px;
-      cursor:pointer; border-bottom:1px solid var(--border); }
+      cursor:default; border-bottom:1px solid var(--border); }
     .pm-lib-asset:hover { background:var(--bg-hover); }
     .pm-lib-asset-icon { font-size:1.1rem; flex-shrink:0; }
     .pm-lib-asset-info { flex:1; min-width:0; }
     .pm-lib-asset-name { display:block; font-size:0.78rem; color:var(--text-primary);
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .pm-lib-asset-meta { font-family:var(--font-mono); font-size:0.65rem; color:var(--text-dim); }
+
+    .pm-lib-asset-add,
     .pm-lib-asset-del { background:transparent; border:none; color:var(--text-dim);
-      width:20px; height:20px; border-radius:3px; cursor:pointer; font-size:0.7rem;
+      width:22px; height:22px; border-radius:3px; cursor:pointer; font-size:0.8rem;
       flex-shrink:0; opacity:0; display:flex; align-items:center; justify-content:center; }
+    .pm-lib-asset:hover .pm-lib-asset-add,
     .pm-lib-asset:hover .pm-lib-asset-del { opacity:1; }
+    .pm-lib-asset-add:hover { background:var(--accent-mint); color:#181820; }
     .pm-lib-asset-del:hover { background:var(--accent-err); color:#fff; }
+
     .pm-lib-drop-hint { position:absolute; inset:0; background:rgba(189,147,249,0.15);
       border:2px dashed var(--accent-purple); border-radius:6px; display:none;
       align-items:center; justify-content:center; color:var(--accent-purple);
       font-size:0.85rem; pointer-events:none; }
     .pm-lib-drop-hint.visible { display:flex; }
+
+    .pm-lib-progress { flex-shrink:0; padding:6px 10px; border-top:1px solid var(--border);
+      align-items:center; gap:6px; font-size:0.75rem; color:var(--text-muted);
+      font-family:var(--font-mono); }
+
+    .pm-lib-error { background:rgba(255,85,85,0.12); border:1px solid var(--accent-err);
+      color:var(--text-primary); border-radius:5px; padding:6px 10px; margin:6px;
+      font-size:0.75rem; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .pm-lib-error-close { background:transparent; border:none; color:var(--text-dim);
+      cursor:pointer; font-size:0.9rem; flex-shrink:0; }
   `;
   document.head.appendChild(s);
 }
@@ -226,18 +406,18 @@ function assetIcon(type) {
     case 'video': return '🎬';
     case 'audio': return '🎵';
     case 'image': return '🖼';
-    default: return '📄';
+    default:      return '📄';
   }
 }
 
 function assetMeta(asset) {
   const parts = [];
   if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
-  if (asset.duration != null) parts.push(`${asset.duration.toFixed(1)}s`);
+  if (asset.duration != null && asset.duration > 0) parts.push(`${asset.duration.toFixed(1)}s`);
   if (asset.mimeType) parts.push(asset.mimeType.split('/')[1]?.toUpperCase() ?? asset.mimeType);
   return parts.join(' · ') || asset.type ?? '';
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

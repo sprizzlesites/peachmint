@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.5 · WebCodecs decode → WebGL2 compositor → preview loop (one clip)
+Phase 1 · step 1.6 · Import / trim / split / reorder / z-order / opacity+transform keyframes
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -33,7 +33,12 @@ Phase 1 · step 1.5 · WebCodecs decode → WebGL2 compositor → preview loop (
   - [x] 1.4.4 src/ui/desktop/inspector.js — clip/track properties, editable numeric props
   - [x] 1.4.5 src/ui/desktop/media-library.js — asset list, drag-to-timeline prep, import stub
   - [x] 1.4.6 app-shell.js updated to dynamically import real desktop shell
-- [ ] 1.5 WebCodecs decode → WebGL2 compositor → preview loop (one clip)
+- [x] 1.5 WebCodecs decode → WebGL2 compositor → preview loop (one clip)
+  - [x] 1.5.1 src/engine/compositor.js — WebGL2 pipeline (shaders, VAO, color correction, transform)
+  - [x] 1.5.2 src/engine/decoder.js — ClipDecoder (HTMLVideoElement/Image, blob URL, seek-and-wait) + DecoderPool (LRU)
+  - [x] 1.5.3 src/engine/preview-engine.js — RAF loop, scrub/play modes, preview:tick/ended events
+  - [x] 1.5.4 shell.js — PreviewEngine wired to transport, project:dirty → timeline refresh
+  - [x] 1.5.5 media-library.js — file import (picker + drag-drop), probe, OPFS write, Add to Timeline
 - [ ] 1.6 Import / trim / split / reorder / z-order / opacity+transform keyframes
 - [ ] 1.7 Web Audio: multi-clip, cueing, volume automation/fades
 - [ ] 1.8 Render targets + custom ratio + WebCodecs export (mp4-muxer)
@@ -62,3 +67,4 @@ Phase 1 · step 1.5 · WebCodecs decode → WebGL2 compositor → preview loop (
 ## Session log (append one entry per working session, newest at bottom)
 - 2026-06-25 session 1 — did: Phase 0 complete — ARCHITECTURE.md, PROGRESS.md, index.html, manifest.json, sw.js, capabilities.js, storage.js, project.js, edl.js, history.js, app-shell.js, capability-panel.js, all OSS docs — committed + pushed · stopped at: end of Phase 0 · next: Phase 1.4 EDL model + multitrack timeline UI (desktop)
 - 2026-06-25 session 2 — did: Phase 1.4 complete — shell.js (start screen, project dialogs, keyboard shortcuts, transport), timeline.js (ruler, playhead, clip drag/trim, track headers, z-order, zoom), toolbar.js, inspector.js, media-library.js, app-shell.js wired to real desktop shell · stopped at: end of 1.4 · next: Phase 1.5 WebCodecs decode → WebGL2 compositor → preview loop
+- 2026-06-25 session 3 — did: Phase 1.5 complete — compositor.js (WebGL2 pipeline), decoder.js (ClipDecoder + DecoderPool), preview-engine.js (RAF loop, scrub/play modes), shell.js updated (PreviewEngine wired, project:dirty → timeline refresh, RAF-based play), media-library.js updated (full file import: picker + drag-drop, OPFS write, probe, Add to Timeline), app-shell.js async bug fixed · stopped at: end of 1.5 · next: Phase 1.6 Import / trim / split / reorder

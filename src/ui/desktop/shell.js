@@ -9,7 +9,8 @@ import { Timeline } from './timeline.js';
 import { Toolbar } from './toolbar.js';
 import { Inspector } from './inspector.js';
 import { MediaLibrary } from './media-library.js';
-import { addTrack, addClip, removeTrack, removeClip } from '../../engine/edl.js';
+import { PreviewEngine } from '../../engine/preview-engine.js';
+import { addTrack, removeClip, totalDuration } from '../../engine/edl.js';
 
 /** Called from app-shell.js to mount the desktop UI into `container`. */
 export function mountDesktopShell(container, { projectManager, historyManager, storage }) {
@@ -36,10 +37,10 @@ class DesktopShell {
     this._toolbar = null;
     this._inspector = null;
     this._library = null;
+    this._previewEngine = null;
 
     this._currentTime = 0;
     this._isPlaying = false;
-    this._playTimer = null;
     this._tlHeight = TIMELINE_DEFAULT_H;
     this._resizing = false;
     this._selectedClip = null;
@@ -48,6 +49,24 @@ class DesktopShell {
   mount() {
     injectStyles();
     this._el.innerHTML = buildHTML();
+
+    // Initialize preview engine
+    const canvas = this._el.querySelector('#pm-preview');
+    this._previewEngine = new PreviewEngine({ canvas, storage: this._storage });
+    this._previewEngine.init();
+    this._previewEngine.addEventListener('preview:tick', (e) => {
+      const t = e.detail.time;
+      this._currentTime = t;
+      this._updateTimecode(t);
+      this._timeline?.seekTo(t);
+    });
+    this._previewEngine.addEventListener('preview:ended', () => {
+      this._isPlaying = false;
+      this._toolbar?.setPlayState(false);
+      this._currentTime = 0;
+      this._updateTimecode(0);
+      this._timeline?.seekTo(0);
+    });
 
     // Bind the resize handle for timeline height
     this._bindTlResize();
@@ -68,7 +87,8 @@ class DesktopShell {
     });
 
     this._library = new MediaLibrary(this._el.querySelector('#pm-media-library'), {
-      pm: this._pm, history: this._history,
+      pm: this._pm, history: this._history, storage: this._storage,
+      onProjectChanged: () => this._timeline?.setProject(this._pm.project),
     });
 
     this._timeline = new Timeline(this._el.querySelector('#pm-timeline'), {
@@ -88,7 +108,10 @@ class DesktopShell {
     this._pm.addEventListener('project:closed', () => this._onProjectClosed());
     this._pm.addEventListener('project:saved', () => this._setSaveStatus('Saved'));
     this._pm.addEventListener('project:autosaved', () => this._setSaveStatus('Auto-saved'));
-    this._pm.addEventListener('project:dirty', () => this._setSaveStatus('Unsaved changes'));
+    this._pm.addEventListener('project:dirty', () => {
+      this._setSaveStatus('Unsaved changes');
+      this._timeline?.setProject(this._pm.project);
+    });
 
     // Wire history events
     this._history.addEventListener('history:change', (e) => {
@@ -125,10 +148,17 @@ class DesktopShell {
     this._inspector?.clear();
     this._toolbar?.setProject(project);
     this._el.querySelector('#pm-project-name').textContent = project.name ?? 'Untitled';
+
+    // Sync preview engine and canvas aspect ratio to project settings
+    this._previewEngine?.setProject(project);
+    const { width, height } = project.canvas;
+    const wrap = this._el.querySelector('.pm-canvas-wrap');
+    if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
   }
 
   _onProjectClosed() {
     this._stop();
+    this._previewEngine?.setProject(null);
     this._showStartScreen();
     this._el.querySelector('#pm-project-name').textContent = '';
     this._setSaveStatus('No project open');
@@ -139,8 +169,8 @@ class DesktopShell {
   _onSeek(time) {
     this._currentTime = time;
     this._updateTimecode(time);
-    // Phase 1.5 will feed this to the compositor
     this._el.dispatchEvent(new CustomEvent('pm:seek', { detail: { time }, bubbles: true }));
+    this._previewEngine?.seekTo(time); // async render, fire-and-forget
   }
 
   _togglePlay() {
@@ -151,25 +181,13 @@ class DesktopShell {
     if (this._isPlaying || !this._pm.project) return;
     this._isPlaying = true;
     this._toolbar?.setPlayState(true);
-    const startWall = performance.now();
-    const startTime = this._currentTime;
-    const total = this._pm.project ? totalDur(this._pm.project) : 60;
-
-    this._playTimer = setInterval(() => {
-      const elapsed = (performance.now() - startWall) / 1000;
-      const t = startTime + elapsed;
-      if (t >= total) { this._stop(); this._onSeek(0); return; }
-      this._currentTime = t;
-      this._updateTimecode(t);
-      this._timeline?.seekTo(t);
-    }, 1000 / 60);
+    this._previewEngine?.play(this._currentTime);
   }
 
   _stop() {
     if (!this._isPlaying) return;
     this._isPlaying = false;
-    clearInterval(this._playTimer);
-    this._playTimer = null;
+    this._previewEngine?.stop();
     this._toolbar?.setPlayState(false);
   }
 
@@ -188,7 +206,6 @@ class DesktopShell {
       addTrack(proj, { type });
     });
     this._history.execute(cmd);
-    this._timeline?.setProject(this._pm.project);
   }
 
   // ─── Dialogs ─────────────────────────────────────────────────────────────────
@@ -392,7 +409,7 @@ class DesktopShell {
     playBtn?.addEventListener('click', () => this._togglePlay());
     rewindBtn?.addEventListener('click', () => { this._stop(); this._onSeek(0); this._timeline?.seekTo(0); });
     fwdBtn?.addEventListener('click', () => {
-      const total = this._pm.project ? totalDur(this._pm.project) : 0;
+      const total = this._pm.project ? Math.max(totalDuration(this._pm.project), 10) : 0;
       this._stop(); this._onSeek(total); this._timeline?.seekTo(total);
     });
   }
@@ -407,8 +424,8 @@ class DesktopShell {
       const ctrl = e.ctrlKey || e.metaKey;
 
       if (e.code === 'Space') { e.preventDefault(); this._togglePlay(); }
-      if (ctrl && e.key === 'z') { e.preventDefault(); this._history.undo(); this._timeline?.setProject(this._pm.project); }
-      if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); this._history.redo(); this._timeline?.setProject(this._pm.project); }
+      if (ctrl && e.key === 'z') { e.preventDefault(); this._history.undo(); }
+      if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); this._history.redo(); }
       if (ctrl && e.key === 's') { e.preventDefault(); this._pm.saveProject(); }
       if (ctrl && e.key === 'n') { e.preventDefault(); this._showNewProjectDialog(); }
       if (ctrl && e.key === 'o') { e.preventDefault(); this._showOpenProjectDialog(); }
@@ -424,7 +441,7 @@ class DesktopShell {
         e.preventDefault();
         const fps = this._pm.project?.canvas?.fps ?? 30;
         const step = e.shiftKey ? 1 : 1 / fps;
-        const total = this._pm.project ? totalDur(this._pm.project) : 60;
+        const total = this._pm.project ? Math.max(totalDuration(this._pm.project), 10) : 60;
         const t = Math.min(total, this._currentTime + step);
         this._onSeek(t); this._timeline?.seekTo(t);
       }
@@ -438,7 +455,6 @@ class DesktopShell {
         this._history.execute(cmd);
         this._selectedClip = null;
         this._inspector?.clear();
-        this._timeline?.setProject(this._pm.project);
       }
     });
   }
@@ -607,12 +623,6 @@ function injectStyles() {
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
-
-function totalDur(project) {
-  let max = 0;
-  for (const t of project.tracks) for (const c of t.clips) max = Math.max(max, c.startTime + c.duration);
-  return Math.max(max, 10);
-}
 
 function formatTimecode(secs, fps = 30) {
   const s = Math.floor(secs);

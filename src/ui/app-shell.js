@@ -69,7 +69,7 @@ export async function boot() {
 
 // ─── Shell routing ────────────────────────────────────────────────────────────
 
-function mountShell(isMobile) {
+async function mountShell(isMobile) {
   const root = document.getElementById('app-root');
   if (!root) return;
 
