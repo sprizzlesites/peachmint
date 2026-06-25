@@ -73,14 +73,27 @@ function mountShell(isMobile) {
   const root = document.getElementById('app-root');
   if (!root) return;
 
+  // Expose engine + helpers to window (used by inline handlers in dialogs/shells)
+  window.__peachmint = {
+    storage: _storage,
+    projectManager: _projectManager,
+    history: _historyManager,
+    showSysCheck: () => showCapabilityPanel({ force: true }),
+    toggleUiMode,
+  };
+
   if (isMobile) {
+    // Mobile shell (Phase 1.10) — placeholder for now
     root.innerHTML = buildMobilePlaceholder();
   } else {
-    root.innerHTML = buildDesktopPlaceholder();
+    // Real desktop shell (Phase 1.4)
+    const { mountDesktopShell } = await import('./desktop/shell.js');
+    mountDesktopShell(root, {
+      projectManager: _projectManager,
+      historyManager: _historyManager,
+      storage: _storage,
+    });
   }
-
-  // Expose engine to shell scripts (will be replaced by proper module wiring in Phase 1.4)
-  window.__peachmint = { storage: _storage, projectManager: _projectManager, history: _historyManager };
 }
 
 function detectMobile() {
@@ -94,64 +107,7 @@ function detectMobile() {
   return touchPrimary || narrowViewport;
 }
 
-// ─── Placeholder UIs (replaced in Phase 1.4 / 1.10) ─────────────────────────
-
-function buildDesktopPlaceholder() {
-  return `
-    <div class="pm-desktop-shell" role="main" aria-label="PeachMint Desktop Editor">
-      <header class="pm-topbar">
-        <span class="pm-brand">🍑🌿 PeachMint</span>
-        <nav class="pm-menu" role="menubar" aria-label="Main menu">
-          <button role="menuitem" class="pm-menu-btn" onclick="window.__peachmint?.projectManager.newProject()">New</button>
-          <button role="menuitem" class="pm-menu-btn">Open…</button>
-          <button role="menuitem" class="pm-menu-btn">Save</button>
-          <button role="menuitem" class="pm-menu-btn" onclick="window.__peachmint?.history.undo()">Undo</button>
-          <button role="menuitem" class="pm-menu-btn" onclick="window.__peachmint?.history.redo()">Redo</button>
-          <button role="menuitem" class="pm-menu-btn pm-menu-syscheck" onclick="showSysCheck()">System Check</button>
-        </nav>
-        <div class="pm-quota" id="pm-quota" aria-live="polite"></div>
-      </header>
-      <main class="pm-workspace">
-        <aside class="pm-panel pm-panel-left">
-          <div class="pm-panel-label">Media Library</div>
-          <div class="pm-placeholder-content">
-            <p>Phase 1.4 — Timeline &amp; media import coming next.</p>
-          </div>
-        </aside>
-        <section class="pm-preview-area" aria-label="Preview">
-          <div class="pm-canvas-wrap">
-            <canvas id="pm-preview" width="1280" height="720" aria-label="Video preview canvas"></canvas>
-            <div class="pm-canvas-overlay">
-              <span class="pm-canvas-label">Preview — Phase 1.5</span>
-            </div>
-          </div>
-          <div class="pm-transport" aria-label="Playback controls">
-            <button class="pm-btn-transport" aria-label="Rewind to start" title="Rewind">⏮</button>
-            <button class="pm-btn-transport" aria-label="Play / Pause" title="Play">▶</button>
-            <button class="pm-btn-transport" aria-label="Fast forward" title="Fast forward">⏭</button>
-            <span class="pm-timecode" aria-live="polite">00:00:00:00</span>
-          </div>
-        </section>
-        <aside class="pm-panel pm-panel-right">
-          <div class="pm-panel-label">Inspector</div>
-          <div class="pm-placeholder-content">
-            <p>Clip properties &amp; keyframes — Phase 1.6</p>
-          </div>
-        </aside>
-      </main>
-      <section class="pm-timeline-area" aria-label="Timeline">
-        <div class="pm-timeline-placeholder">
-          <span>Multitrack Timeline — Phase 1.4</span>
-        </div>
-      </section>
-      <footer class="pm-statusbar" aria-label="Status bar">
-        <span id="pm-save-status" aria-live="polite">No project open</span>
-        <a href="#" class="pm-statusbar-link" onclick="showSysCheck(); return false">System Info</a>
-        <button class="pm-ui-toggle" onclick="toggleUiMode()">Switch to Mobile UI</button>
-      </footer>
-    </div>
-  `;
-}
+// ─── Mobile placeholder (Phase 1.10) ─────────────────────────────────────────
 
 function buildMobilePlaceholder() {
   return `
@@ -252,6 +208,6 @@ function toggleUiMode() {
   location.reload();
 }
 
-// Exposed to inline onclick handlers in placeholder UI
+// Exposed before boot completes (some handlers reference these early)
 window.showSysCheck = () => showCapabilityPanel({ force: true });
 window.toggleUiMode = toggleUiMode;

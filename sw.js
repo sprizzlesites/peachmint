@@ -1,7 +1,7 @@
 // PeachMint Service Worker — app-shell cache + offline strategy
 // Strategy: cache-first for app shell assets; network-first for CDN deps
 
-const CACHE_NAME = 'peachmint-v1';
+const CACHE_NAME = 'peachmint-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -13,6 +13,11 @@ const APP_SHELL = [
   '/src/engine/project.js',
   '/src/engine/edl.js',
   '/src/engine/history.js',
+  '/src/ui/desktop/shell.js',
+  '/src/ui/desktop/timeline.js',
+  '/src/ui/desktop/toolbar.js',
+  '/src/ui/desktop/inspector.js',
+  '/src/ui/desktop/media-library.js',
 ];
 
 self.addEventListener('install', (e) => {

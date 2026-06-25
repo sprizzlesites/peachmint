@@ -1,7 +1,7 @@
 # PROGRESS — PeachMint Browser Video Editor
 
 ## ▶ RESUME HERE
-Phase 1 · step 1.4 · EDL model + multitrack timeline UI (desktop first)
+Phase 1 · step 1.5 · WebCodecs decode → WebGL2 compositor → preview loop (one clip)
 
 ## Pending revisions (do these FIRST on next `continue`, in order)
 - [ ] (none)
@@ -26,7 +26,13 @@ Phase 1 · step 1.4 · EDL model + multitrack timeline UI (desktop first)
   - [x] 0.3.4 Storage round-trip smoke test in StorageLayer.selfTest() / capability panel
 
 ### Phase 1 — Playable core (MVP / P0)
-- [ ] 1.4 EDL model + multitrack timeline UI (desktop)
+- [x] 1.4 EDL model + multitrack timeline UI (desktop)
+  - [x] 1.4.1 src/ui/desktop/shell.js — full desktop shell with start screen, project dialogs, keyboard shortcuts, transport
+  - [x] 1.4.2 src/ui/desktop/timeline.js — multitrack timeline with ruler, playhead, clip drag, trim, track reorder (z-order)
+  - [x] 1.4.3 src/ui/desktop/toolbar.js — tool selector, undo/redo, zoom, export stub
+  - [x] 1.4.4 src/ui/desktop/inspector.js — clip/track properties, editable numeric props
+  - [x] 1.4.5 src/ui/desktop/media-library.js — asset list, drag-to-timeline prep, import stub
+  - [x] 1.4.6 app-shell.js updated to dynamically import real desktop shell
 - [ ] 1.5 WebCodecs decode → WebGL2 compositor → preview loop (one clip)
 - [ ] 1.6 Import / trim / split / reorder / z-order / opacity+transform keyframes
 - [ ] 1.7 Web Audio: multi-clip, cueing, volume automation/fades
@@ -55,3 +61,4 @@ Phase 1 · step 1.4 · EDL model + multitrack timeline UI (desktop first)
 
 ## Session log (append one entry per working session, newest at bottom)
 - 2026-06-25 session 1 — did: Phase 0 complete — ARCHITECTURE.md, PROGRESS.md, index.html, manifest.json, sw.js, capabilities.js, storage.js, project.js, edl.js, history.js, app-shell.js, capability-panel.js, all OSS docs — committed + pushed · stopped at: end of Phase 0 · next: Phase 1.4 EDL model + multitrack timeline UI (desktop)
+- 2026-06-25 session 2 — did: Phase 1.4 complete — shell.js (start screen, project dialogs, keyboard shortcuts, transport), timeline.js (ruler, playhead, clip drag/trim, track headers, z-order, zoom), toolbar.js, inspector.js, media-library.js, app-shell.js wired to real desktop shell · stopped at: end of 1.4 · next: Phase 1.5 WebCodecs decode → WebGL2 compositor → preview loop
