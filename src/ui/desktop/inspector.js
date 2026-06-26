@@ -334,10 +334,9 @@ export class Inspector {
       btn.addEventListener('click', () => this._onAddKeyframe(btn.dataset.prop));
     });
 
-    // Wire keyframe delete buttons
-    this._el.querySelectorAll('.pm-insp-kf-del').forEach((btn) => {
-      btn.addEventListener('click', () => this._onDeleteKeyframe(btn.dataset.prop, parseFloat(btn.dataset.time)));
-    });
+    // Wire keyframe controls (delete + easing + bezier handles)
+    const kfListEl = this._el.querySelector('#pm-insp-kf-list');
+    if (kfListEl) this._wireKfListControls(kfListEl, clip);
 
     // Wire Track Point button
     this._el.querySelector('#pm-insp-track-btn')?.addEventListener('click', () => {
@@ -749,17 +748,68 @@ export class Inspector {
     setTimeout(() => err.remove(), 5000);
   }
 
+  _wireKfListControls(kfListEl, clip) {
+    kfListEl.querySelectorAll('.pm-insp-kf-del').forEach((btn) => {
+      btn.addEventListener('click', () => this._onDeleteKeyframe(btn.dataset.prop, parseFloat(btn.dataset.time)));
+    });
+    kfListEl.querySelectorAll('.pm-kf-easing-sel').forEach((sel) => {
+      sel.addEventListener('change', () =>
+        this._onKfEasingChange(sel.dataset.prop, parseFloat(sel.dataset.time), sel.value, clip));
+    });
+    kfListEl.querySelectorAll('.pm-kf-cp').forEach((inp) => {
+      inp.addEventListener('change', () =>
+        this._onKfHandleChange(inp.dataset.prop, parseFloat(inp.dataset.time), parseInt(inp.dataset.idx, 10), parseFloat(inp.value), clip));
+    });
+  }
+
   _refreshKfList(clip) {
     const el = this._el.querySelector('#pm-insp-kf-list');
     if (!el) return;
     el.innerHTML = buildKfList(clip);
-    el.querySelectorAll('.pm-insp-kf-del').forEach((btn) => {
-      btn.addEventListener('click', () => this._onDeleteKeyframe(btn.dataset.prop, parseFloat(btn.dataset.time)));
-    });
-    // Update keyframe indicator dots on buttons
+    this._wireKfListControls(el, clip);
     this._el.querySelectorAll('.pm-insp-kf-add-btn').forEach((btn) => {
       const hasKF = (clip.keyframes[btn.dataset.prop]?.length ?? 0) > 0;
       btn.classList.toggle('has-kf', hasKF);
+    });
+  }
+
+  _onKfEasingChange(propPath, time, easing, clip) {
+    if (!clip || !this._pm.project) return;
+    const arr = clip.keyframes[propPath];
+    if (!arr) return;
+    const kf = arr.find((k) => k.time === time);
+    if (!kf) return;
+    const oldEasing  = kf.easing;
+    const oldHandles = kf.handles ? [...kf.handles] : null;
+    this._history.execute({
+      label: `Set keyframe easing: ${propPath}`,
+      execute: () => {
+        kf.easing = easing;
+        if (easing === 'bezier' && !kf.handles) kf.handles = [0.42, 0, 0.58, 1];
+        this._pm.markDirty();
+        this._refreshKfList(clip);
+      },
+      undo: () => {
+        kf.easing  = oldEasing;
+        kf.handles = oldHandles;
+        this._pm.markDirty();
+        this._refreshKfList(clip);
+      },
+    });
+  }
+
+  _onKfHandleChange(propPath, time, idx, value, clip) {
+    if (!clip || !this._pm.project || isNaN(value)) return;
+    const arr = clip.keyframes[propPath];
+    if (!arr) return;
+    const kf = arr.find((k) => k.time === time);
+    if (!kf || kf.easing !== 'bezier') return;
+    if (!kf.handles) kf.handles = [0.42, 0, 0.58, 1];
+    const old = kf.handles[idx];
+    this._history.execute({
+      label: `Set bezier handle ${idx} on ${propPath}`,
+      execute: () => { kf.handles[idx] = value; this._pm.markDirty(); },
+      undo:    () => { kf.handles[idx] = old;   this._pm.markDirty(); },
     });
   }
 }
@@ -809,6 +859,9 @@ function lutRow(lutId, assets) {
   `;
 }
 
+const _EASING_OPTS = ['linear','ease','ease-in','ease-out','ease-in-out','hold','bezier'];
+const _EASING_LABELS = { linear:'Linear', ease:'Smooth', 'ease-in':'Ease In', 'ease-out':'Ease Out', 'ease-in-out':'In/Out', hold:'Hold', bezier:'Custom…' };
+
 function buildKfList(clip) {
   const paths = Object.keys(clip.keyframes).filter((k) => clip.keyframes[k].length > 0);
   if (!paths.length) return '<div class="pm-insp-empty-sm">No keyframes yet — click ◆ next to a property to add one</div>';
@@ -816,17 +869,40 @@ function buildKfList(clip) {
   return paths.map((path) =>
     `<div class="pm-insp-kf-prop">
       <span class="pm-insp-kf-prop-name">${escHtml(path)}</span>
-      ${clip.keyframes[path].map((kf) => `
-        <div class="pm-insp-kf-entry">
-          <span class="pm-insp-kf-diamond" aria-hidden="true">◆</span>
-          <span class="pm-insp-kf-time">${kf.time.toFixed(2)}s</span>
-          <span class="pm-insp-kf-val">${typeof kf.value === 'number' ? kf.value.toFixed(3) : kf.value}</span>
-          <button class="pm-insp-kf-del"
-                  data-prop="${escHtml(path)}"
-                  data-time="${kf.time}"
-                  aria-label="Delete keyframe at ${kf.time.toFixed(2)}s">✕</button>
-        </div>
-      `).join('')}
+      ${clip.keyframes[path].map((kf, kfIdx) => {
+        const isFirst = kfIdx === 0;
+        const easing  = kf.easing ?? 'linear';
+        const h       = kf.handles ?? [0.42, 0, 0.58, 1];
+        const easingCtrl = isFirst
+          ? '<span class="pm-kf-easing-na" title="No preceding keyframe">—</span>'
+          : `<select class="pm-kf-easing-sel pm-insp-select"
+                     data-prop="${escHtml(path)}" data-time="${kf.time}"
+                     aria-label="Easing into this keyframe">
+               ${_EASING_OPTS.map((e) =>
+                 `<option value="${e}"${easing === e ? ' selected' : ''}>${_EASING_LABELS[e]}</option>`
+               ).join('')}
+             </select>`;
+        const bezierRow = (!isFirst && easing === 'bezier')
+          ? `<div class="pm-kf-bezier-row">
+               <span>x1</span><input type="number" class="pm-kf-cp pm-insp-num" data-prop="${escHtml(path)}" data-time="${kf.time}" data-idx="0" value="${h[0].toFixed(2)}" min="0" max="1" step="0.01" aria-label="cx1">
+               <span>y1</span><input type="number" class="pm-kf-cp pm-insp-num" data-prop="${escHtml(path)}" data-time="${kf.time}" data-idx="1" value="${h[1].toFixed(2)}" min="-2" max="3" step="0.01" aria-label="cy1">
+               <span>x2</span><input type="number" class="pm-kf-cp pm-insp-num" data-prop="${escHtml(path)}" data-time="${kf.time}" data-idx="2" value="${h[2].toFixed(2)}" min="0" max="1" step="0.01" aria-label="cx2">
+               <span>y2</span><input type="number" class="pm-kf-cp pm-insp-num" data-prop="${escHtml(path)}" data-time="${kf.time}" data-idx="3" value="${h[3].toFixed(2)}" min="-2" max="3" step="0.01" aria-label="cy2">
+             </div>`
+          : '';
+        return `
+          <div class="pm-insp-kf-entry">
+            <span class="pm-insp-kf-diamond" aria-hidden="true">◆</span>
+            <span class="pm-insp-kf-time">${kf.time.toFixed(2)}s</span>
+            <span class="pm-insp-kf-val">${typeof kf.value === 'number' ? kf.value.toFixed(3) : kf.value}</span>
+            ${easingCtrl}
+            <button class="pm-insp-kf-del"
+                    data-prop="${escHtml(path)}"
+                    data-time="${kf.time}"
+                    aria-label="Delete keyframe at ${kf.time.toFixed(2)}s">✕</button>
+          </div>
+          ${bezierRow}`;
+      }).join('')}
     </div>`
   ).join('');
 }
@@ -936,6 +1012,13 @@ function injectStyles() {
       border-radius:4px; cursor:pointer; background:var(--bg-base); }
     .pm-cap-color { width:36px; height:22px; padding:1px; border:1px solid var(--border);
       border-radius:4px; cursor:pointer; background:var(--bg-base); }
+
+    /* Keyframe easing controls */
+    .pm-kf-easing-na { font-size:0.6rem; color:var(--text-dim); min-width:60px; text-align:center; }
+    .pm-kf-easing-sel { font-size:0.65rem; max-width:72px; padding:1px 2px; }
+    .pm-kf-bezier-row { display:flex; align-items:center; gap:3px; padding:2px 0 2px 20px; flex-wrap:wrap; }
+    .pm-kf-bezier-row span { font-size:0.6rem; color:var(--text-muted); }
+    .pm-kf-bezier-row .pm-insp-num { width:44px; font-size:0.65rem; padding:1px 3px; }
   `;
   document.head.appendChild(s);
 }

@@ -383,21 +383,31 @@ function lerpValue(a, b, t) {
 
 function easeT(t, easing, handles) {
   switch (easing) {
-    case 'hold':   return 0;
-    case 'linear': return t;
-    case 'ease':   return t * t * (3 - 2 * t); // smoothstep
-    case 'bezier': {
-      if (!handles) return t;
-      // Cubic bezier approximation — Newton-Raphson would be exact but overkill here
-      return cubicBezierY(t, handles[0], handles[1], handles[2], handles[3]);
-    }
-    default: return t;
+    case 'hold':        return 0;
+    case 'linear':      return t;
+    case 'ease':        return t * t * (3 - 2 * t); // smoothstep
+    case 'ease-in':     return _solveCubicBezier(t, 0.42, 0,    1.0,  1.0);
+    case 'ease-out':    return _solveCubicBezier(t, 0.0,  0,    0.58, 1.0);
+    case 'ease-in-out': return _solveCubicBezier(t, 0.42, 0,    0.58, 1.0);
+    case 'bezier':      return handles ? _solveCubicBezier(t, handles[0], handles[1], handles[2], handles[3]) : t;
+    default:            return t;
   }
 }
 
-function cubicBezierY(t, cx1, cy1, cx2, cy2) {
-  // Simple 1D cubic bezier evaluation (t is already parametric)
-  return 3 * (1 - t) * (1 - t) * t * cy1 +
-         3 * (1 - t) * t * t * cy2 +
-         t * t * t;
+/**
+ * Evaluate a CSS-style cubic-bezier(cx1,cy1,cx2,cy2) at normalized input u.
+ * Uses Newton-Raphson to find the parametric t where x(t)=u, then returns y(t).
+ */
+function _solveCubicBezier(u, cx1, cy1, cx2, cy2) {
+  let t = u;
+  for (let i = 0; i < 8; i++) {
+    const a  = 1 - t;
+    const xt = 3 * cx1 * a * a * t + 3 * cx2 * a * t * t + t * t * t;
+    const dx = 3 * (cx1 * a * a + 2 * (cx2 - cx1) * a * t + (1 - cx2) * t * t);
+    if (Math.abs(dx) < 1e-10) break;
+    t -= (xt - u) / dx;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+  }
+  const a = 1 - t;
+  return 3 * cy1 * a * a * t + 3 * cy2 * a * t * t + t * t * t;
 }
