@@ -205,6 +205,28 @@ export class Inspector {
       </div>
 
       <div class="pm-insp-section">
+        <div class="pm-insp-section-label">AI Segmentation</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Enabled</span>
+          <label class="pm-toggle">
+            <input type="checkbox" class="pm-seg-enabled" ${p.seg?.enabled ? 'checked' : ''}>
+            <span class="pm-toggle-track"></span>
+          </label>
+        </div>
+        ${propRow('Feather', 'seg.feather', p.seg?.feather ?? 0.02, 0, 0.5, 0.001, hasKF('seg.feather'))}
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Invert</span>
+          <label class="pm-toggle">
+            <input type="checkbox" class="pm-seg-invert" ${p.seg?.invert ? 'checked' : ''}>
+            <span class="pm-toggle-track"></span>
+          </label>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label" style="font-size:0.65rem;color:var(--text-dim)">Loads MediaPipe on first use</span>
+        </div>
+      </div>
+
+      <div class="pm-insp-section">
         <div class="pm-insp-section-label">Transition</div>
         <div class="pm-insp-row">
           <span class="pm-insp-row-label">Out type</span>
@@ -270,6 +292,12 @@ export class Inspector {
     maskTypeEl?.addEventListener('change', () => this._onMaskTypeChange(maskTypeEl.value));
     const maskInvertEl = this._el.querySelector('.pm-mask-invert');
     maskInvertEl?.addEventListener('change', () => this._onMaskInvertChange(maskInvertEl.checked));
+
+    // Wire AI segmentation controls
+    const segEnabledEl = this._el.querySelector('.pm-seg-enabled');
+    segEnabledEl?.addEventListener('change', () => this._onSegEnabledChange(segEnabledEl.checked));
+    const segInvertEl = this._el.querySelector('.pm-seg-invert');
+    segInvertEl?.addEventListener('change', () => this._onSegInvertChange(segInvertEl.checked));
 
     // Wire transition controls
     const trTypeEl = this._el.querySelector('.pm-tr-type');
@@ -420,6 +448,28 @@ export class Inspector {
       label: inverted ? 'Invert mask' : 'Un-invert mask',
       execute: () => { (clip.properties.mask ??= {}).invert = inverted; this._pm.markDirty(); },
       undo:    () => { (clip.properties.mask ??= {}).invert = old;      this._pm.markDirty(); },
+    });
+  }
+
+  _onSegEnabledChange(enabled) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const old = clip.properties.seg?.enabled ?? false;
+    this._history.execute({
+      label: enabled ? 'Enable AI segmentation' : 'Disable AI segmentation',
+      execute: () => { (clip.properties.seg ??= {}).enabled = enabled;  this._pm.markDirty(); },
+      undo:    () => { (clip.properties.seg ??= {}).enabled = old;      this._pm.markDirty(); },
+    });
+  }
+
+  _onSegInvertChange(inverted) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const old = clip.properties.seg?.invert ?? false;
+    this._history.execute({
+      label: inverted ? 'Invert segmentation mask' : 'Un-invert segmentation mask',
+      execute: () => { (clip.properties.seg ??= {}).invert = inverted; this._pm.markDirty(); },
+      undo:    () => { (clip.properties.seg ??= {}).invert = old;      this._pm.markDirty(); },
     });
   }
 

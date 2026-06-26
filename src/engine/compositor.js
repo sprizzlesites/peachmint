@@ -57,6 +57,11 @@ uniform float u_vfx_sharpen;
 uniform float u_vfx_aberration;
 uniform float u_vfx_pixelate;
 uniform float u_vfx_time;
+// AI segmentation mask
+uniform sampler2D u_seg_mask;
+uniform int       u_seg_enabled;
+uniform float     u_seg_feather;
+uniform int       u_seg_invert;
 out vec4 fragColor;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 void main() {
@@ -100,6 +105,15 @@ void main() {
     float chroma_dist = length(diff - ld * LUMA);
     float sm = max(u_chroma_smooth, 0.001);
     s.a *= smoothstep(u_chroma_threshold - sm, u_chroma_threshold + sm, chroma_dist);
+  }
+
+  // AI segmentation mask (person/foreground confidence)
+  if (u_seg_enabled != 0) {
+    float seg = texture(u_seg_mask, v_uv).r;
+    float sf  = max(u_seg_feather, 0.001);
+    seg = smoothstep(0.5 - sf, 0.5 + sf, seg);
+    if (u_seg_invert != 0) seg = 1.0 - seg;
+    s.a *= seg;
   }
 
   // Color correction
@@ -165,6 +179,9 @@ export class Compositor {
     this._texture = null;
     this._dummyLUT = null;
     this._activeLUT = null;
+    this._segTex    = null;
+    this._dummySeg  = null;
+    this._segEnabled = false;
     this._uniforms = {};
     this._canvasW = 0;
     this._canvasH = 0;
@@ -232,6 +249,10 @@ export class Compositor {
       vfxAberration:  gl.getUniformLocation(p, 'u_vfx_aberration'),
       vfxPixelate:    gl.getUniformLocation(p, 'u_vfx_pixelate'),
       vfxTime:        gl.getUniformLocation(p, 'u_vfx_time'),
+      segMask:        gl.getUniformLocation(p, 'u_seg_mask'),
+      segEnabled:     gl.getUniformLocation(p, 'u_seg_enabled'),
+      segFeather:     gl.getUniformLocation(p, 'u_seg_feather'),
+      segInvert:      gl.getUniformLocation(p, 'u_seg_invert'),
     };
 
     // Set initial disabled state for chroma/mask (uniforms default to 0 in GL but be explicit)
@@ -250,6 +271,18 @@ export class Compositor {
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
     gl.uniform1i(this._uniforms.lut, 1);
     gl.uniform1i(this._uniforms.lutEnabled, 0);
+
+    // Dummy 1×1 segmentation mask on TEXTURE2 (fully opaque — seg pass disabled by default)
+    this._dummySeg = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this._dummySeg);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array([255]));
+    gl.uniform1i(this._uniforms.segMask, 2);
+    gl.uniform1i(this._uniforms.segEnabled, 0);
 
     this._transparent = transparent;
 
@@ -347,6 +380,15 @@ export class Compositor {
     gl.uniform1i(this._uniforms.lut, 1);
     gl.uniform1i(this._uniforms.lutEnabled, this._activeLUT ? 1 : 0);
 
+    // Bind segmentation mask to texture unit 2
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this._segEnabled && this._segTex ? this._segTex : this._dummySeg);
+    gl.uniform1i(this._uniforms.segMask, 2);
+    const seg = props?.seg ?? {};
+    gl.uniform1i(this._uniforms.segEnabled, this._segEnabled ? 1 : 0);
+    gl.uniform1f(this._uniforms.segFeather, seg.feather ?? 0.02);
+    gl.uniform1i(this._uniforms.segInvert,  seg.invert  ? 1  : 0);
+
     // Color / compositing uniforms
     const col    = props?.color  ?? {};
     const chroma = props?.chroma ?? {};
@@ -413,6 +455,7 @@ export class Compositor {
     gl.uniform1i(this._uniforms.lutEnabled,    0);
     gl.uniform1i(this._uniforms.chromaEnabled, 0);
     gl.uniform1i(this._uniforms.maskType,      0);
+    gl.uniform1i(this._uniforms.segEnabled,    0);
     gl.uniform1f(this._uniforms.vfxVignette,   0);
     gl.uniform1f(this._uniforms.vfxGrain,      0);
     gl.uniform1f(this._uniforms.vfxSharpen,    0);
@@ -428,6 +471,44 @@ export class Compositor {
     gl.uniformMatrix3fv(this._uniforms.xform, false, new Float32Array([1,0,0, 0,1,0, 0,0,1]));
     gl.bindVertexArray(this._vao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  // ─── Segmentation mask API ───────────────────────────────────────────────────
+
+  /**
+   * Upload a Float32Array person-confidence mask (0=background, 1=person) to
+   * texture unit 2 and enable the seg pass for the next drawClip() call.
+   * Must be called once per clip per frame; call clearSegmentationMask() after.
+   *
+   * @param {Float32Array} maskFloat — width × height values in [0, 1]
+   * @param {number} w
+   * @param {number} h
+   */
+  setSegmentationMask(maskFloat, w, h) {
+    if (!this._ready) return;
+    const gl = this._gl;
+    const pixels = new Uint8Array(maskFloat.length);
+    for (let i = 0; i < maskFloat.length; i++) {
+      pixels[i] = Math.round(Math.min(1, Math.max(0, maskFloat[i])) * 255);
+    }
+    gl.activeTexture(gl.TEXTURE2);
+    if (!this._segTex) {
+      this._segTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this._segTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this._segTex);
+    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, pixels);
+    this._segEnabled = true;
+  }
+
+  /** Disable the segmentation pass for subsequent drawClip() calls. */
+  clearSegmentationMask() {
+    this._segEnabled = false;
   }
 
   // ─── LUT API ──────────────────────────────────────────────────────────────────
@@ -487,6 +568,8 @@ export class Compositor {
     const gl = this._gl;
     gl.deleteTexture(this._texture);
     if (this._dummyLUT) gl.deleteTexture(this._dummyLUT);
+    if (this._segTex)   gl.deleteTexture(this._segTex);
+    if (this._dummySeg) gl.deleteTexture(this._dummySeg);
     gl.deleteBuffer(this._quadBuf);
     gl.deleteProgram(this._program);
     this._ready = false;

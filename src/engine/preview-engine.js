@@ -42,11 +42,19 @@ export class PreviewEngine extends EventTarget {
     this._lutTexCache = new Map(); // assetId → WebGLTexture
     this._fontCache   = new Map(); // fontFamily → true/false (loaded/failed)
     this._textRenderer = null;
+    this._segEngine    = null;
   }
 
   _getTextRenderer() {
     if (!this._textRenderer) this._textRenderer = new TextRenderer();
     return this._textRenderer;
+  }
+
+  async _ensureSegEngine() {
+    if (this._segEngine) return this._segEngine;
+    const { SegmentationEngine } = await import('./segmentation.js');
+    this._segEngine = new SegmentationEngine();
+    return this._segEngine;
   }
 
   async _ensureFont(fontFamily) {
@@ -84,6 +92,8 @@ export class PreviewEngine extends EventTarget {
     this._fontCache.clear();
     this._textRenderer?.dispose();
     this._textRenderer = null;
+    this._segEngine?.dispose();
+    this._segEngine = null;
     this._decoders?.dispose();
     this._compositor.dispose();
     this._ready = false;
@@ -192,6 +202,7 @@ export class PreviewEngine extends EventTarget {
             await this._ensureFont(props.text?.fontFamily);
             const tex = this._getTextRenderer().render(props.text, cw, ch);
             this._compositor.setActiveLUT(null);
+            this._compositor.clearSegmentationMask();
             this._compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
           }
           continue;
@@ -214,10 +225,19 @@ export class PreviewEngine extends EventTarget {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
             this._compositor.setActiveLUT(lutTex);
+            if (props.seg?.enabled) {
+              const segEng = await this._ensureSegEngine();
+              const segResult = await segEng.segment(src);
+              if (segResult) this._compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
+              else this._compositor.clearSegmentationMask();
+            } else {
+              this._compositor.clearSegmentationMask();
+            }
             this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor ?? 1);
           }
         } catch {
           this._compositor.setActiveLUT(null);
+          this._compositor.clearSegmentationMask();
           this._compositor.drawSolid([0.2, 0.05, 0.05, 1]);
         }
       }
@@ -233,6 +253,7 @@ export class PreviewEngine extends EventTarget {
             await this._ensureFont(props.text?.fontFamily);
             const tex = this._getTextRenderer().render(props.text, cw, ch);
             this._compositor.setActiveLUT(null);
+            this._compositor.clearSegmentationMask();
             this._compositor.drawClip(tex, props, cw, ch, factor);
           }
           continue;
@@ -249,9 +270,19 @@ export class PreviewEngine extends EventTarget {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
             this._compositor.setActiveLUT(lutTex);
+            if (props.seg?.enabled) {
+              const segEng = await this._ensureSegEngine();
+              const segResult = await segEng.segment(src);
+              if (segResult) this._compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
+              else this._compositor.clearSegmentationMask();
+            } else {
+              this._compositor.clearSegmentationMask();
+            }
             this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, factor);
           }
-        } catch {}
+        } catch {
+          this._compositor.clearSegmentationMask();
+        }
       }
     } finally {
       this._rendering = false;

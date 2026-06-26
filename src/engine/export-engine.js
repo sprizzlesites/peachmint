@@ -152,6 +152,14 @@ export class ExportEngine {
     const textRenderer = new TextRenderer();
     this._fontCache.clear();
 
+    // Lazily create segmentation engine only if any clip requests it
+    const needsSeg = project.tracks.some((t) => t.clips.some((c) => c.properties?.seg?.enabled));
+    let segEngine = null;
+    if (needsSeg) {
+      const { SegmentationEngine } = await import('./segmentation.js');
+      segEngine = new SegmentationEngine();
+    }
+
     const duration      = Math.max(totalDuration(project), 0.01);
     const frameDuration = 1 / fps;
     const totalFrames   = Math.ceil(duration * fps);
@@ -164,7 +172,7 @@ export class ExportEngine {
         if (videoError)    throw videoError;
 
         const time = i * frameDuration;
-        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer);
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine);
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
@@ -192,6 +200,7 @@ export class ExportEngine {
       muxer.finalize();
 
     } finally {
+      segEngine?.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -218,10 +227,17 @@ export class ExportEngine {
     const lutCache     = new Map();
     const textRenderer = new TextRenderer();
     this._fontCache.clear();
+    const needsSeg = project.tracks.some((t) => t.clips.some((c) => c.properties?.seg?.enabled));
+    let segEngine = null;
+    if (needsSeg) {
+      const { SegmentationEngine } = await import('./segmentation.js');
+      segEngine = new SegmentationEngine();
+    }
     try {
-      await this._renderFrame(compositor, decoders, project, pngTime, lutCache, textRenderer, transparent);
+      await this._renderFrame(compositor, decoders, project, pngTime, lutCache, textRenderer, transparent, segEngine);
       return offscreen.convertToBlob({ type: 'image/png' });
     } finally {
+      segEngine?.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -247,6 +263,12 @@ export class ExportEngine {
     const lutCache     = new Map();
     const textRenderer = new TextRenderer();
     this._fontCache.clear();
+    const needsSeg = project.tracks.some((t) => t.clips.some((c) => c.properties?.seg?.enabled));
+    let segEngine = null;
+    if (needsSeg) {
+      const { SegmentationEngine } = await import('./segmentation.js');
+      segEngine = new SegmentationEngine();
+    }
 
     const duration    = Math.max(totalDuration(project), 0.01);
     const frameDur    = 1 / gifFps;
@@ -258,7 +280,7 @@ export class ExportEngine {
       for (let i = 0; i < totalFrames; i++) {
         if (this._aborted) throw new Error('Export cancelled');
         const time = i * frameDur;
-        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer);
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine);
         const pixels  = compositor.getPixels();
         if (pixels) {
           const palette = quantize(pixels, 256);
@@ -270,6 +292,7 @@ export class ExportEngine {
       encoder.finish();
       return encoder.bytes();
     } finally {
+      segEngine?.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -277,7 +300,7 @@ export class ExportEngine {
 
   // ─── Video frame rendering ────────────────────────────────────────────────────
 
-  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer, transparent = false) {
+  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer, transparent = false, segEngine = null) {
     const bg = project.canvas?.background;
     compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0, transparent ? 0 : 1);
     compositor.setTime(time);
@@ -297,6 +320,7 @@ export class ExportEngine {
           await this._ensureFont(props.text?.fontFamily, project);
           const tex = textRenderer.render(props.text, cw, ch);
           compositor.setActiveLUT(null);
+          compositor.clearSegmentationMask();
           compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
         }
         continue;
@@ -305,6 +329,7 @@ export class ExportEngine {
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset?.storageKey) {
         compositor.setActiveLUT(null);
+        compositor.clearSegmentationMask();
         compositor.drawSolid([0.15, 0.04, 0.04, 1]);
         continue;
       }
@@ -320,10 +345,18 @@ export class ExportEngine {
             ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
             : null;
           compositor.setActiveLUT(lutTex);
+          if (props.seg?.enabled && segEngine) {
+            const segResult = await segEngine.segment(src);
+            if (segResult) compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
+            else compositor.clearSegmentationMask();
+          } else {
+            compositor.clearSegmentationMask();
+          }
           compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor ?? 1);
         }
       } catch {
         compositor.setActiveLUT(null);
+        compositor.clearSegmentationMask();
         compositor.drawSolid([0.2, 0.05, 0.05, 1]);
       }
     }
@@ -339,6 +372,7 @@ export class ExportEngine {
           await this._ensureFont(props.text?.fontFamily, project);
           const tex = textRenderer.render(props.text, cw, ch);
           compositor.setActiveLUT(null);
+          compositor.clearSegmentationMask();
           compositor.drawClip(tex, props, cw, ch, factor);
         }
         continue;
@@ -357,9 +391,18 @@ export class ExportEngine {
             ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
             : null;
           compositor.setActiveLUT(lutTex);
+          if (props.seg?.enabled && segEngine) {
+            const segResult = await segEngine.segment(src);
+            if (segResult) compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
+            else compositor.clearSegmentationMask();
+          } else {
+            compositor.clearSegmentationMask();
+          }
           compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, factor);
         }
-      } catch {}
+      } catch {
+        compositor.clearSegmentationMask();
+      }
     }
   }
 

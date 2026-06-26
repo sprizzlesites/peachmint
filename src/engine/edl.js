@@ -336,6 +336,7 @@ function defaultClipProperties() {
     crop: { left: 0, right: 0, top: 0, bottom: 0 },
     color: { exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0 },
     vfx: { vignette: 0, grain: 0, sharpen: 0, aberration: 0, pixelate: 0 },
+    seg: { enabled: false, feather: 0.02, invert: false },
     blendMode: 'normal',
     volume: 1,
   };
