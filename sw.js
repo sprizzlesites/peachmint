@@ -1,7 +1,9 @@
 // PeachMint Service Worker — app-shell cache + offline strategy
 // Strategy: cache-first for app shell assets; network-first for CDN deps
+// Also patches same-origin responses with COOP/COEP headers so that
+// crossOriginIsolated = true, enabling SharedArrayBuffer for ffmpeg.wasm.
 
-const CACHE_NAME = 'peachmint-v12';
+const CACHE_NAME = 'peachmint-v13';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -25,6 +27,7 @@ const APP_SHELL = [
   '/src/engine/export-engine.js',
   '/src/engine/lut.js',
   '/src/engine/text-renderer.js',
+  '/src/engine/ffmpeg-engine.js',
   '/src/ui/mobile/shell.js',
 ];
 
@@ -43,6 +46,20 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// Wrap a same-origin Response with Cross-Origin Isolation headers so that
+// window.crossOriginIsolated becomes true and SharedArrayBuffer is available.
+function addCOIHeaders(resp) {
+  if (!resp || resp.type === 'opaque' || resp.type === 'error') return resp;
+  try {
+    const h = new Headers(resp.headers);
+    h.set('Cross-Origin-Opener-Policy', 'same-origin');
+    h.set('Cross-Origin-Embedder-Policy', 'credentialless');
+    return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
+  } catch {
+    return resp;
+  }
+}
+
 self.addEventListener('fetch', (e) => {
   const { request } = e;
   const url = new URL(request.url);
@@ -50,21 +67,22 @@ self.addEventListener('fetch', (e) => {
   // Only handle GET requests from same origin or pinned CDN libs
   if (request.method !== 'GET') return;
 
-  // App shell: cache-first
+  // App shell: cache-first + add COI headers to enable SharedArrayBuffer
   if (url.origin === self.location.origin) {
     e.respondWith(
-      caches.match(request).then((cached) => {
-        if (cached) return cached;
-        return fetch(request).then((resp) => {
+      caches.match(request).then(async (cached) => {
+        if (cached) return addCOIHeaders(cached);
+        try {
+          const resp = await fetch(request);
           if (resp.ok) {
             const clone = resp.clone();
             caches.open(CACHE_NAME).then((c) => c.put(request, clone));
           }
-          return resp;
-        }).catch(() => {
+          return addCOIHeaders(resp);
+        } catch {
           // Offline fallback: serve index.html for navigation requests
-          if (request.mode === 'navigate') return caches.match('/index.html');
-        });
+          if (request.mode === 'navigate') return addCOIHeaders(await caches.match('/index.html'));
+        }
       })
     );
     return;

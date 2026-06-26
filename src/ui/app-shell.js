@@ -117,6 +117,22 @@ async function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   try {
     await navigator.serviceWorker.register('/sw.js');
+    // If not cross-origin isolated yet, do a one-time reload after the SW
+    // takes control so that it can serve our pages with COOP/COEP headers,
+    // enabling SharedArrayBuffer (required for ffmpeg.wasm fallback).
+    if (!crossOriginIsolated) {
+      const key = 'pm-coi-reload';
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, '1');
+        if (navigator.serviceWorker.controller) {
+          // SW is already controlling — reload immediately
+          location.reload();
+        } else {
+          // Wait for the SW to claim this client, then reload
+          navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+        }
+      }
+    }
   } catch (err) {
     console.warn('SW registration failed:', err);
   }

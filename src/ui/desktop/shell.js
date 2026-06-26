@@ -453,6 +453,15 @@ class DesktopShell {
         </label>
       </div>
 
+      <div id="ex-ffmpeg-row" style="display:none;margin-top:10px;padding:10px 12px;background:var(--bg-base);border-radius:var(--radius);border:1px solid var(--border);font-size:0.8rem">
+        <div id="ex-ffmpeg-required" style="display:none;color:var(--accent-warn)">
+          ⚠ WebCodecs encode unavailable on this browser. Using ffmpeg.wasm (~50 MB download, slower).
+        </div>
+        <label id="ex-ffmpeg-optional" style="display:none;align-items:center;gap:8px;cursor:pointer;color:var(--text-muted)">
+          <input type="checkbox" id="ex-use-ffmpeg"> Use ffmpeg.wasm encoder (Firefox / older Safari)
+        </label>
+      </div>
+
       <div id="ex-progress-wrap" style="display:none;margin-top:16px">
         <div style="background:var(--bg-base);border-radius:6px;overflow:hidden;height:6px">
           <div id="ex-pbar" style="height:100%;width:0%;background:var(--accent-peach);transition:width .15s ease"></div>
@@ -483,17 +492,39 @@ class DesktopShell {
     const pngOpts      = dialog.querySelector('#ex-png-opts');
     const audioRow     = dialog.querySelector('#ex-audio-row');
 
+    const ffmpegRow      = dialog.querySelector('#ex-ffmpeg-row');
+    const ffmpegRequired = dialog.querySelector('#ex-ffmpeg-required');
+    const ffmpegOptional = dialog.querySelector('#ex-ffmpeg-optional');
+    const webCodecsOK    = typeof VideoEncoder !== 'undefined';
+    const sabOK          = typeof SharedArrayBuffer !== 'undefined';
+
     const EXT_LABELS = { mp4: 'Export MP4', webm: 'Export WebM', gif: 'Export GIF', png: 'Export PNG' };
 
     const updateForFormat = () => {
       const fmt = fmtSel.value;
-      videoOpts.style.display = (fmt === 'mp4' || fmt === 'webm') ? '' : 'none';
+      const isVideoFmt = fmt === 'mp4' || fmt === 'webm';
+      videoOpts.style.display = isVideoFmt ? '' : 'none';
       gifOpts.style.display   = fmt === 'gif'  ? '' : 'none';
       pngOpts.style.display   = fmt === 'png'  ? '' : 'none';
       audioRow.style.display  = fmt === 'mp4'  ? '' : 'none';
       startBtn.textContent    = EXT_LABELS[fmt] ?? 'Export';
+
+      // Show ffmpeg.wasm row only for video formats when SAB is available
+      if (isVideoFmt && sabOK) {
+        ffmpegRow.style.display     = '';
+        if (!webCodecsOK) {
+          ffmpegRequired.style.display = '';
+          ffmpegOptional.style.display = 'none';
+        } else {
+          ffmpegRequired.style.display = 'none';
+          ffmpegOptional.style.display = 'flex';
+        }
+      } else {
+        ffmpegRow.style.display = 'none';
+      }
     };
     fmtSel.addEventListener('change', updateForFormat);
+    updateForFormat(); // set initial state based on SAB availability
 
     const closeDialog = () => { dialog.close(); dialog.remove(); };
 
@@ -519,10 +550,19 @@ class DesktopShell {
       errorBox.style.display = 'none';
       pbar.style.width = '0%';
 
+      const useFFmpegCb = dialog.querySelector('#ex-use-ffmpeg');
+      const useFFmpeg   = (fmt === 'mp4' || fmt === 'webm') &&
+                          (!webCodecsOK || (useFFmpegCb?.checked ?? false));
+
       const t0 = Date.now();
       try {
-        const { ExportEngine } = await import('../../engine/export-engine.js');
-        exportEngine = new ExportEngine({ storage: this._storage });
+        if (useFFmpeg) {
+          const { FFmpegEngine } = await import('../../engine/ffmpeg-engine.js');
+          exportEngine = new FFmpegEngine({ storage: this._storage });
+        } else {
+          const { ExportEngine } = await import('../../engine/export-engine.js');
+          exportEngine = new ExportEngine({ storage: this._storage });
+        }
 
         const settings = {
           format: fmt, width, height, fps,
