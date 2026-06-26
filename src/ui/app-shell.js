@@ -36,7 +36,10 @@ export async function boot() {
     }
   } catch { /* ignore */ }
 
-  // 4. Show capability panel on first load (or when ?syscheck in URL)
+  // 4. Hide loading screen before capability panel so the dialog is clearly visible
+  _hideLoadingScreen();
+
+  // Show capability panel on first load (or when ?syscheck in URL)
   const forceCheck = new URLSearchParams(location.search).has('syscheck');
   await showCapabilityPanel({ force: forceCheck });
 
@@ -56,7 +59,7 @@ export async function boot() {
 
   // 6. Mount the right UI shell
   const isMobile = detectMobile();
-  mountShell(isMobile);
+  await mountShell(isMobile);
 
   // 7. Update storage quota display
   updateQuotaDisplay();
@@ -112,6 +115,11 @@ function detectMobile() {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function _hideLoadingScreen() {
+  const ls = document.getElementById('loading-screen');
+  if (ls) { ls.classList.add('hidden'); setTimeout(() => ls.remove(), 400); }
+}
 
 async function registerSW() {
   if (!('serviceWorker' in navigator)) return;
