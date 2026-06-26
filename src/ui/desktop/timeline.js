@@ -71,6 +71,7 @@ export class Timeline {
     this._mounted = false;
     this._selectedClipIds = new Set();
     this._waveformCache   = null;
+    this._snapEnabled     = true;
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -143,6 +144,8 @@ export class Timeline {
             <button class="pm-tl-zoom-btn" id="pm-tl-zi" title="Zoom in (+)">+</button>
             <span class="pm-tl-zoom-val" id="pm-tl-zv">100%</span>
             <button class="pm-tl-zoom-btn" id="pm-tl-zo" title="Zoom out (-)">−</button>
+            <button class="pm-tl-snap-toggle active" id="pm-tl-snap-toggle"
+                    title="Toggle magnetic snap — hold Alt to disable temporarily">Snap</button>
             <button class="pm-tl-sync-btn" id="pm-tl-sync" style="display:none" disabled
                     title="Sync selected clips by audio peak — Ctrl+Shift+S">Sync</button>
           </div>
@@ -163,8 +166,9 @@ export class Timeline {
           </div>
           <div class="pm-tl-lanes-scroll" id="pm-tl-lanes-scroll">
             <div class="pm-tl-lanes-inner" id="pm-tl-lanes-inner" data-tool="pointer">
-              <!-- lane divs + playhead line -->
+              <!-- lane divs + playhead line + snap indicator -->
               <div class="pm-tl-playhead" id="pm-tl-playhead" aria-hidden="true"></div>
+              <div class="pm-tl-snap-line" id="pm-tl-snap-line" aria-hidden="true"></div>
             </div>
           </div>
         </div>
@@ -204,6 +208,10 @@ export class Timeline {
     this._el.querySelector('#pm-tl-zi').addEventListener('click', () => this.zoomIn());
     this._el.querySelector('#pm-tl-zo').addEventListener('click', () => this.zoomOut());
     this._el.querySelector('#pm-tl-sync').addEventListener('click', () => this.syncSelectedClips());
+    this._el.querySelector('#pm-tl-snap-toggle').addEventListener('click', (e) => {
+      this._snapEnabled = !this._snapEnabled;
+      e.currentTarget.classList.toggle('active', this._snapEnabled);
+    });
 
     // Wheel zoom (Ctrl + wheel)
     this._lanesScroll.addEventListener('wheel', (e) => {
@@ -715,7 +723,26 @@ export class Timeline {
     if (this._drag.type === 'clip') {
       const clip = this._findClip(this._drag.clipId);
       if (!clip) return;
-      const newStart = Math.max(0, this._drag.origStartTime + deltaSec);
+      let newStart = Math.max(0, this._drag.origStartTime + deltaSec);
+
+      // Magnetic snap: try both left and right edge, pick the closer one
+      if (this._snapEnabled && !e.altKey) {
+        const snapTimes = this._collectSnapTimes(this._drag.clipId);
+        const snapL = this._findSnap(newStart, snapTimes);
+        const snapR = this._findSnap(newStart + clip.duration, snapTimes);
+        if (snapL && (!snapR || snapL.dist <= snapR.dist)) {
+          newStart = Math.max(0, snapL.snapped);
+          this._showSnapLine(snapL.at);
+        } else if (snapR) {
+          newStart = Math.max(0, snapR.snapped - clip.duration);
+          this._showSnapLine(snapR.at);
+        } else {
+          this._hideSnapLine();
+        }
+      } else {
+        this._hideSnapLine();
+      }
+
       this._drag.clipEl.style.left = `${newStart * this._pxPerSec}px`;
       clip._previewStartTime = newStart;
       // Move fixed-position ghost with cursor
@@ -733,13 +760,40 @@ export class Timeline {
       const clip = this._findClip(this._drag.clipId);
       if (!clip) return;
       if (this._drag.side === 'right') {
-        const newDur = Math.max(0.1, this._drag.origDuration + deltaSec);
+        let newDur = Math.max(0.1, this._drag.origDuration + deltaSec);
+
+        if (this._snapEnabled && !e.altKey) {
+          const proposedEnd = this._drag.origStartTime + newDur;
+          const snapResult = this._findSnap(proposedEnd, this._collectSnapTimes(this._drag.clipId));
+          if (snapResult) {
+            newDur = Math.max(0.1, snapResult.snapped - this._drag.origStartTime);
+            this._showSnapLine(snapResult.at);
+          } else {
+            this._hideSnapLine();
+          }
+        } else {
+          this._hideSnapLine();
+        }
+
         this._drag.clipEl.style.width = `${newDur * this._pxPerSec}px`;
         clip._previewDuration = newDur;
         this._onSeek(clip.startTime + newDur);
       } else {
-        const newStart = Math.min(this._drag.origStartTime + this._drag.origDuration - 0.1,
+        let newStart = Math.min(this._drag.origStartTime + this._drag.origDuration - 0.1,
           Math.max(0, this._drag.origStartTime + deltaSec));
+
+        if (this._snapEnabled && !e.altKey) {
+          const snapResult = this._findSnap(newStart, this._collectSnapTimes(this._drag.clipId));
+          if (snapResult) {
+            newStart = Math.max(0, Math.min(this._drag.origStartTime + this._drag.origDuration - 0.1, snapResult.snapped));
+            this._showSnapLine(snapResult.at);
+          } else {
+            this._hideSnapLine();
+          }
+        } else {
+          this._hideSnapLine();
+        }
+
         const newDur = this._drag.origDuration - (newStart - this._drag.origStartTime);
         this._drag.clipEl.style.left = `${newStart * this._pxPerSec}px`;
         this._drag.clipEl.style.width = `${Math.max(4, newDur * this._pxPerSec)}px`;
@@ -827,6 +881,7 @@ export class Timeline {
     }
 
     this._drag = null;
+    this._hideSnapLine();
   }
 
   // ─── Clip / track selection ──────────────────────────────────────────────────
@@ -1016,6 +1071,69 @@ export class Timeline {
     }
     return null;
   }
+
+  // ─── Snap helpers ─────────────────────────────────────────────────────────────
+
+  _collectSnapTimes(excludeClipId) {
+    const times = [];
+    times.push(this._currentTime);
+    if (this._project) {
+      for (const track of this._project.tracks) {
+        for (const clip of track.clips) {
+          if (clip.id === excludeClipId) continue;
+          times.push(clip.startTime);
+          times.push(clip.startTime + clip.duration);
+        }
+      }
+      // Frame-aligned grid snap — only when frames are wide enough to be useful
+      const fps = this._project.canvas?.fps ?? 30;
+      const frameW = this._pxPerSec / fps;
+      if (frameW >= 3) {
+        // Add the nearest frame boundary to the proposed time as a candidate
+        // (candidates for any proposed time are pre-computed at call sites via _findSnap)
+        this._snapFrameInterval = 1 / fps;
+      } else {
+        this._snapFrameInterval = 0;
+      }
+    }
+    return times;
+  }
+
+  /**
+   * Find the closest snap candidate to proposedSec within SNAP_THRESHOLD_PX.
+   * Returns { snapped, at, dist } or null if nothing within threshold.
+   */
+  _findSnap(proposedSec, snapTimes) {
+    const proposedPx = proposedSec * this._pxPerSec;
+    let best = null;
+    let bestDist = SNAP_THRESHOLD_PX;
+
+    for (const t of snapTimes) {
+      const dist = Math.abs(proposedPx - t * this._pxPerSec);
+      if (dist < bestDist) { bestDist = dist; best = t; }
+    }
+
+    // Frame-grid snap
+    if (this._snapFrameInterval > 0) {
+      const nearFrame = Math.round(proposedSec / this._snapFrameInterval) * this._snapFrameInterval;
+      const dist = Math.abs(proposedPx - nearFrame * this._pxPerSec);
+      if (dist < bestDist) { bestDist = dist; best = nearFrame; }
+    }
+
+    return best !== null ? { snapped: best, at: best, dist: bestDist } : null;
+  }
+
+  _showSnapLine(time) {
+    const el = this._el?.querySelector('#pm-tl-snap-line');
+    if (!el) return;
+    el.style.transform = `translateX(${time * this._pxPerSec}px)`;
+    el.style.opacity = '1';
+  }
+
+  _hideSnapLine() {
+    const el = this._el?.querySelector('#pm-tl-snap-line');
+    if (el) el.style.opacity = '0';
+  }
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -1144,6 +1262,20 @@ function injectStyles() {
       cursor:pointer; font-family:var(--font-mono); white-space:nowrap; line-height:1.5; }
     .pm-tl-sync-btn:hover:not(:disabled) { background:var(--accent-purple); color:#fff; }
     .pm-tl-sync-btn:disabled { opacity:0.3; cursor:default; }
+
+    /* Snap toggle button */
+    .pm-tl-snap-toggle { background:transparent; border:1px solid var(--border);
+      color:var(--text-dim); font-size:0.6rem; padding:1px 5px; border-radius:4px;
+      cursor:pointer; font-family:var(--font-mono); white-space:nowrap; line-height:1.5; }
+    .pm-tl-snap-toggle:hover { border-color:var(--accent-blue); color:var(--accent-blue); }
+    .pm-tl-snap-toggle.active { border-color:var(--accent-blue); color:var(--accent-blue);
+      background:rgba(139,233,253,.1); }
+
+    /* Magnetic snap indicator line — shown during drag when snap is active */
+    .pm-tl-snap-line { position:absolute; top:0; bottom:0; width:1px;
+      background:var(--accent-blue,#8be9fd); pointer-events:none; opacity:0;
+      transform:translateX(0); will-change:transform; z-index:18;
+      transition:opacity 0.05s; }
   `;
   document.head.appendChild(s);
 }
