@@ -304,6 +304,18 @@ export function getTransitionOutFactor(clip, time) {
   return 1 - (time - trStart) / tr.duration;
 }
 
+/**
+ * Get the animation frame index for a draw clip at project time t.
+ * Coordinates within drawing.frames are keyed by this integer index.
+ */
+export function getDrawFrameIdx(clip, t) {
+  const drawing = clip.properties?.drawing;
+  if (!drawing) return 0;
+  const fps = drawing.fps ?? 12;
+  const localTime = Math.max(0, t - clip.startTime);
+  return Math.floor(localTime * fps);
+}
+
 /** Total project duration in seconds (end of the last clip across all tracks). */
 export function totalDuration(project) {
   let max = 0;

@@ -11,7 +11,8 @@ import { Inspector } from './inspector.js';
 import { MediaLibrary } from './media-library.js';
 import { PreviewEngine } from '../../engine/preview-engine.js';
 import { AudioEngine }   from '../../engine/audio-engine.js';
-import { addTrack, removeClip, totalDuration } from '../../engine/edl.js';
+import { addTrack, removeClip, totalDuration, getDrawFrameIdx } from '../../engine/edl.js';
+import { DrawRenderer }  from '../../engine/draw-renderer.js';
 
 /** Called from app-shell.js to mount the desktop UI into `container`. */
 export function mountDesktopShell(container, { projectManager, historyManager, storage }) {
@@ -46,6 +47,17 @@ class DesktopShell {
     this._tlHeight = TIMELINE_DEFAULT_H;
     this._resizing = false;
     this._selectedClip = null;
+
+    // Draw tool state
+    this._drawActive   = false;
+    this._drawClip     = null;
+    this._drawTool     = 'pen';
+    this._drawColor    = '#ff6644';
+    this._drawWidth    = 6;
+    this._drawOpacity  = 1;
+    this._drawOnion    = true;
+    this._drawLive     = null; // in-progress stroke points
+    this._drawRenderer = null;
   }
 
   mount() {
@@ -90,7 +102,7 @@ class DesktopShell {
       onZoomIn:     () => this._timeline?.zoomIn(),
       onZoomOut:    () => this._timeline?.zoomOut(),
       onTogglePlay: () => this._togglePlay(),
-      onToolChange: (tool) => this._timeline?.setTool(tool),
+      onToolChange: (tool) => { this._timeline?.setTool(tool); this._setDrawMode(tool === 'draw'); },
       onExport:     () => this._showExportDialog(),
     });
 
@@ -142,6 +154,10 @@ class DesktopShell {
     // Transport buttons
     this._bindTransport();
 
+    // Draw overlay
+    this._bindDrawOverlay();
+    this._bindDrawControls();
+
     // Project name rename on double-click
     this._el.querySelector('#pm-project-name')?.addEventListener('dblclick', () => this._editProjectName());
 
@@ -177,6 +193,8 @@ class DesktopShell {
     const { width, height } = project.canvas;
     const wrap = this._el.querySelector('.pm-canvas-wrap');
     if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
+    const overlayCanvas = this._el.querySelector('#pm-draw-overlay');
+    if (overlayCanvas) { overlayCanvas.width = width; overlayCanvas.height = height; }
   }
 
   _onProjectClosed() {
@@ -198,6 +216,7 @@ class DesktopShell {
     this._updateTimecode(time);
     this._el.dispatchEvent(new CustomEvent('pm:seek', { detail: { time }, bubbles: true }));
     this._previewEngine?.seekTo(time); // async render, fire-and-forget
+    if (this._drawActive && this._drawClip) this._redrawOverlay(null);
     // During playback, restart audio from the new position
     if (this._isPlaying) {
       this._audioEngine?.stop();
@@ -229,6 +248,8 @@ class DesktopShell {
 
   _onClipSelect(clip) {
     this._selectedClip = clip;
+    this._drawClip = clip?.properties?.drawing ? clip : null;
+    if (this._drawActive) this._setDrawMode(true); // refresh overlay visibility
     this._inspector?.showClip(clip);
   }
 
@@ -240,6 +261,196 @@ class DesktopShell {
       addTrack(proj, { type });
     });
     this._history.execute(cmd);
+  }
+
+  // ─── Draw tool ───────────────────────────────────────────────────────────────
+
+  _getDrawRenderer() {
+    if (!this._drawRenderer) this._drawRenderer = new DrawRenderer();
+    return this._drawRenderer;
+  }
+
+  _setDrawMode(active) {
+    this._drawActive = active;
+    const overlay  = this._el.querySelector('#pm-draw-overlay');
+    const controls = this._el.querySelector('#pm-draw-controls');
+    const show = active && !!this._drawClip;
+    if (overlay) {
+      overlay.style.display      = show ? 'block' : 'none';
+      overlay.style.pointerEvents = show ? 'auto'  : 'none';
+      overlay.style.cursor       = show ? 'crosshair' : 'default';
+    }
+    if (controls) controls.style.display = active ? 'flex' : 'none';
+    if (show) this._redrawOverlay(null);
+  }
+
+  _bindDrawOverlay() {
+    const overlay = this._el.querySelector('#pm-draw-overlay');
+    if (!overlay) return;
+    let drawing = false;
+
+    const normPos = (e) => {
+      const r = overlay.getBoundingClientRect();
+      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    };
+
+    overlay.addEventListener('pointerdown', (e) => {
+      if (!this._drawActive || !this._drawClip) return;
+      e.preventDefault();
+      overlay.setPointerCapture(e.pointerId);
+      drawing = true;
+      this._drawLive = {
+        color: this._drawColor, width: this._drawWidth,
+        opacity: this._drawOpacity, tool: this._drawTool,
+        points: [normPos(e)],
+      };
+      this._redrawOverlay(this._drawLive);
+    });
+
+    overlay.addEventListener('pointermove', (e) => {
+      if (!drawing || !this._drawLive) return;
+      this._drawLive.points.push(normPos(e));
+      this._redrawOverlay(this._drawLive);
+    });
+
+    overlay.addEventListener('pointerup', () => {
+      if (!drawing) return;
+      drawing = false;
+      if (this._drawLive?.points.length) this._commitStroke(this._drawLive);
+      this._drawLive = null;
+    });
+
+    overlay.addEventListener('pointercancel', () => { drawing = false; this._drawLive = null; });
+  }
+
+  _bindDrawControls() {
+    const el = this._el;
+
+    el.querySelector('#pm-draw-prev-frame')?.addEventListener('click', () => this._stepDrawFrame(-1));
+    el.querySelector('#pm-draw-next-frame')?.addEventListener('click', () => this._stepDrawFrame(1));
+    el.querySelector('#pm-draw-clear-frame')?.addEventListener('click', () => this._clearDrawFrame());
+
+    el.querySelector('#pm-draw-tool-pen')?.addEventListener('click', () => {
+      this._drawTool = 'pen';
+      el.querySelector('#pm-draw-tool-pen')?.classList.add('active');
+      el.querySelector('#pm-draw-tool-pen')?.setAttribute('aria-pressed', 'true');
+      el.querySelector('#pm-draw-tool-eraser')?.classList.remove('active');
+      el.querySelector('#pm-draw-tool-eraser')?.setAttribute('aria-pressed', 'false');
+    });
+
+    el.querySelector('#pm-draw-tool-eraser')?.addEventListener('click', () => {
+      this._drawTool = 'eraser';
+      el.querySelector('#pm-draw-tool-eraser')?.classList.add('active');
+      el.querySelector('#pm-draw-tool-eraser')?.setAttribute('aria-pressed', 'true');
+      el.querySelector('#pm-draw-tool-pen')?.classList.remove('active');
+      el.querySelector('#pm-draw-tool-pen')?.setAttribute('aria-pressed', 'false');
+    });
+
+    el.querySelector('#pm-draw-color')?.addEventListener('input', (e) => { this._drawColor = e.target.value; });
+    el.querySelector('#pm-draw-width')?.addEventListener('input', (e) => { this._drawWidth = parseInt(e.target.value, 10) || 6; });
+    el.querySelector('#pm-draw-opacity')?.addEventListener('input', (e) => { this._drawOpacity = parseFloat(e.target.value) || 1; });
+    el.querySelector('#pm-draw-onion')?.addEventListener('change', (e) => {
+      this._drawOnion = e.target.checked;
+      if (this._drawActive && this._drawClip) this._redrawOverlay(null);
+    });
+  }
+
+  _redrawOverlay(liveStroke) {
+    const overlay = this._el.querySelector('#pm-draw-overlay');
+    if (!overlay || !this._drawClip) return;
+    const ctx = overlay.getContext('2d');
+    const w = overlay.width;
+    const h = overlay.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const drawing = this._drawClip.properties.drawing;
+    const idx = this._currentDrawFrameIdx();
+    const dr  = this._getDrawRenderer();
+
+    if (this._drawOnion) {
+      // Past frame — blue tint
+      const prev = drawing.frames?.[idx - 1]?.strokes;
+      if (prev?.length) {
+        const tinted = prev.map((s) => ({ ...s, color: '#4488ff', opacity: 0.3, tool: 'pen' }));
+        dr.paintStrokes(ctx, tinted, w, h, 1);
+      }
+      // Next frame — red/orange tint
+      const next = drawing.frames?.[idx + 1]?.strokes;
+      if (next?.length) {
+        const tinted = next.map((s) => ({ ...s, color: '#ff4455', opacity: 0.3, tool: 'pen' }));
+        dr.paintStrokes(ctx, tinted, w, h, 1);
+      }
+    }
+
+    // Current frame committed strokes
+    const cur = drawing.frames?.[idx]?.strokes;
+    if (cur?.length) dr.paintStrokes(ctx, cur, w, h, 1);
+
+    // Live in-progress stroke
+    if (liveStroke?.points.length) dr.paintStrokes(ctx, [liveStroke], w, h, 1);
+
+    this._updateDrawFrameInfo(idx, drawing);
+  }
+
+  _updateDrawFrameInfo(idx, drawing) {
+    const el = this._el.querySelector('#pm-draw-frame-info');
+    if (el) el.textContent = `Frame ${idx + 1}  @${drawing?.fps ?? 12}fps`;
+  }
+
+  _currentDrawFrameIdx() {
+    if (!this._drawClip) return 0;
+    return getDrawFrameIdx(this._drawClip, this._currentTime);
+  }
+
+  _commitStroke(stroke) {
+    if (!this._drawClip || !stroke?.points.length) return;
+    const clip    = this._drawClip;
+    const frameIdx = this._currentDrawFrameIdx();
+    const drawing = clip.properties.drawing;
+    if (!drawing.frames) drawing.frames = {};
+    if (!drawing.frames[frameIdx]) drawing.frames[frameIdx] = { strokes: [] };
+    const strokes = drawing.frames[frameIdx].strokes;
+
+    this._history.execute({
+      label:   'Draw stroke',
+      execute: () => { strokes.push(stroke); this._pm.markDirty(); },
+      undo:    () => { strokes.pop();         this._pm.markDirty(); },
+    });
+
+    this._redrawOverlay(null);
+    this._previewEngine?.seekTo(this._currentTime);
+  }
+
+  _clearDrawFrame() {
+    if (!this._drawClip) return;
+    const frameIdx = this._currentDrawFrameIdx();
+    const drawing  = this._drawClip.properties.drawing;
+    const prev     = [...(drawing.frames?.[frameIdx]?.strokes ?? [])];
+    if (!prev.length) return;
+
+    this._history.execute({
+      label:   'Clear draw frame',
+      execute: () => { if (drawing.frames?.[frameIdx]) drawing.frames[frameIdx].strokes = []; this._pm.markDirty(); },
+      undo:    () => {
+        if (!drawing.frames) drawing.frames = {};
+        if (!drawing.frames[frameIdx]) drawing.frames[frameIdx] = {};
+        drawing.frames[frameIdx].strokes = prev;
+        this._pm.markDirty();
+      },
+    });
+
+    this._redrawOverlay(null);
+    this._previewEngine?.seekTo(this._currentTime);
+  }
+
+  _stepDrawFrame(delta) {
+    if (!this._drawClip) return;
+    const fps  = this._drawClip.properties.drawing?.fps ?? 12;
+    const step = delta / fps;
+    const end  = this._drawClip.startTime + this._drawClip.duration;
+    const t    = Math.max(this._drawClip.startTime, Math.min(end - 1 / fps / 2, this._currentTime + step));
+    this._onSeek(t);
+    this._timeline?.seekTo(t);
   }
 
   // ─── Dialogs ─────────────────────────────────────────────────────────────────
@@ -799,6 +1010,24 @@ function buildHTML() {
           <div class="pm-preview-area">
             <div class="pm-canvas-wrap">
               <canvas id="pm-preview" width="1280" height="720" aria-label="Video preview canvas"></canvas>
+              <canvas id="pm-draw-overlay" class="pm-draw-overlay" width="1280" height="720"
+                      aria-label="Drawing overlay" style="display:none;pointer-events:none"></canvas>
+            </div>
+            <div class="pm-draw-controls" id="pm-draw-controls" style="display:none" role="group" aria-label="Draw controls">
+              <button id="pm-draw-prev-frame" class="pm-draw-nav-btn" title="Previous frame (,)" aria-label="Previous draw frame">‹</button>
+              <span id="pm-draw-frame-info" class="pm-draw-frame-info">Frame 1  @12fps</span>
+              <button id="pm-draw-next-frame" class="pm-draw-nav-btn" title="Next frame (.)" aria-label="Next draw frame">›</button>
+              <span class="pm-draw-sep" aria-hidden="true">|</span>
+              <button id="pm-draw-tool-pen" class="pm-draw-tool-btn active" title="Pen" aria-label="Pen tool" aria-pressed="true">✏</button>
+              <button id="pm-draw-tool-eraser" class="pm-draw-tool-btn" title="Eraser" aria-label="Eraser tool" aria-pressed="false">⌫</button>
+              <input type="color" id="pm-draw-color" value="#ff6644" title="Stroke color" aria-label="Stroke color">
+              <input type="range" id="pm-draw-width" min="1" max="40" value="6" step="1" title="Stroke width" aria-label="Stroke width" style="width:64px">
+              <input type="range" id="pm-draw-opacity" min="0.1" max="1" value="1" step="0.05" title="Stroke opacity" aria-label="Stroke opacity" style="width:56px">
+              <label class="pm-draw-onion-label" title="Show adjacent frames as ghosted onion skins">
+                <input type="checkbox" id="pm-draw-onion" checked aria-label="Onion skin"> Onion
+              </label>
+              <span class="pm-draw-sep" aria-hidden="true">|</span>
+              <button id="pm-draw-clear-frame" class="pm-draw-clear-btn" aria-label="Clear current frame">Clear frame</button>
             </div>
             <div class="pm-transport" aria-label="Playback controls" role="group">
               <button id="pm-rewind-btn" class="pm-btn-xport" aria-label="Rewind to start" title="Rewind (Home)">⏮</button>
@@ -864,6 +1093,31 @@ function injectStyles() {
       aspect-ratio:16/9; background:#000; border-radius:6px; overflow:hidden;
       box-shadow:0 4px 32px #00000088; }
     #pm-preview { width:100%; height:100%; display:block; }
+    .pm-draw-overlay { position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+    /* Draw controls */
+    .pm-draw-controls { display:flex; align-items:center; gap:6px; flex-shrink:0;
+      padding:4px 8px; background:var(--bg-panel); border-radius:6px;
+      border:1px solid var(--border); font-size:0.72rem; flex-wrap:wrap; }
+    .pm-draw-nav-btn { background:var(--bg-ui,#2a2a3a); border:1px solid var(--border);
+      color:var(--text-primary); width:22px; height:22px; border-radius:4px;
+      font-size:0.9rem; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+    .pm-draw-nav-btn:hover { border-color:var(--accent-purple); color:var(--accent-purple); }
+    .pm-draw-frame-info { font-family:var(--font-mono); font-size:0.68rem; color:var(--accent-blue);
+      min-width:90px; text-align:center; }
+    .pm-draw-sep { color:var(--border); padding:0 2px; }
+    .pm-draw-tool-btn { background:transparent; border:1px solid var(--border); color:var(--text-muted);
+      width:24px; height:24px; border-radius:4px; font-size:0.8rem; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; }
+    .pm-draw-tool-btn:hover { background:var(--bg-hover); color:var(--text-primary); }
+    .pm-draw-tool-btn.active { background:var(--bg-hover); border-color:var(--accent-peach); color:var(--accent-peach); }
+    #pm-draw-color { width:28px; height:22px; padding:1px; border:1px solid var(--border);
+      border-radius:4px; cursor:pointer; background:var(--bg-base); }
+    .pm-draw-onion-label { display:flex; align-items:center; gap:4px;
+      font-size:0.68rem; color:var(--text-muted); cursor:pointer; }
+    .pm-draw-clear-btn { background:transparent; border:1px solid var(--border); color:var(--text-muted);
+      border-radius:4px; padding:2px 8px; font-size:0.68rem; cursor:pointer; font-family:var(--font-ui); }
+    .pm-draw-clear-btn:hover { border-color:var(--accent-err); color:var(--accent-err); }
 
     /* Transport */
     .pm-transport { display:flex; align-items:center; gap:6px; flex-shrink:0; }

@@ -14,9 +14,10 @@
 
 import { Compositor }              from './compositor.js';
 import { DecoderPool }             from './decoder.js';
-import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
+import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFactor, getDrawFrameIdx } from './edl.js';
 import { parseCube, parse3dl }     from './lut.js';
-import { TextRenderer }              from './text-renderer.js';
+import { TextRenderer }            from './text-renderer.js';
+import { DrawRenderer }            from './draw-renderer.js';
 
 const MP4_MUXER_CDN  = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
 const WEBM_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/webm-muxer@3.2.0/+esm';
@@ -150,6 +151,7 @@ export class ExportEngine {
     const decoders     = new DecoderPool(this._storage);
     const lutCache     = new Map();
     const textRenderer = new TextRenderer();
+    const drawRenderer = new DrawRenderer();
     this._fontCache.clear();
 
     // Lazily create segmentation engine only if any clip requests it
@@ -172,7 +174,7 @@ export class ExportEngine {
         if (videoError)    throw videoError;
 
         const time = i * frameDuration;
-        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine);
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine, drawRenderer);
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
@@ -201,6 +203,7 @@ export class ExportEngine {
 
     } finally {
       segEngine?.dispose();
+      drawRenderer.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -226,6 +229,7 @@ export class ExportEngine {
     const decoders     = new DecoderPool(this._storage);
     const lutCache     = new Map();
     const textRenderer = new TextRenderer();
+    const drawRenderer = new DrawRenderer();
     this._fontCache.clear();
     const needsSeg = project.tracks.some((t) => t.clips.some((c) => c.properties?.seg?.enabled));
     let segEngine = null;
@@ -234,10 +238,11 @@ export class ExportEngine {
       segEngine = new SegmentationEngine();
     }
     try {
-      await this._renderFrame(compositor, decoders, project, pngTime, lutCache, textRenderer, transparent, segEngine);
+      await this._renderFrame(compositor, decoders, project, pngTime, lutCache, textRenderer, transparent, segEngine, drawRenderer);
       return offscreen.convertToBlob({ type: 'image/png' });
     } finally {
       segEngine?.dispose();
+      drawRenderer.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -262,6 +267,7 @@ export class ExportEngine {
     const decoders     = new DecoderPool(this._storage);
     const lutCache     = new Map();
     const textRenderer = new TextRenderer();
+    const drawRenderer = new DrawRenderer();
     this._fontCache.clear();
     const needsSeg = project.tracks.some((t) => t.clips.some((c) => c.properties?.seg?.enabled));
     let segEngine = null;
@@ -280,7 +286,7 @@ export class ExportEngine {
       for (let i = 0; i < totalFrames; i++) {
         if (this._aborted) throw new Error('Export cancelled');
         const time = i * frameDur;
-        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine);
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine, drawRenderer);
         const pixels  = compositor.getPixels();
         if (pixels) {
           const palette = quantize(pixels, 256);
@@ -293,6 +299,7 @@ export class ExportEngine {
       return encoder.bytes();
     } finally {
       segEngine?.dispose();
+      drawRenderer.dispose();
       compositor.dispose();
       decoders.dispose();
     }
@@ -300,7 +307,7 @@ export class ExportEngine {
 
   // ─── Video frame rendering ────────────────────────────────────────────────────
 
-  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer, transparent = false, segEngine = null) {
+  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer, transparent = false, segEngine = null, drawRenderer = null) {
     const bg = project.canvas?.background;
     compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0, transparent ? 0 : 1);
     compositor.setTime(time);
@@ -322,6 +329,17 @@ export class ExportEngine {
           compositor.setActiveLUT(null);
           compositor.clearSegmentationMask();
           compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
+        } else if (clip.properties.drawing && drawRenderer) {
+          const drawing = clip.properties.drawing;
+          const frameIdx = getDrawFrameIdx(clip, time);
+          const strokes = drawing.frames?.[frameIdx]?.strokes;
+          if (strokes?.length) {
+            const props = resolveProps(clip, time);
+            const canvas = drawRenderer.renderFrame(strokes, cw, ch);
+            compositor.setActiveLUT(null);
+            compositor.clearSegmentationMask();
+            compositor.drawClip(canvas, props, cw, ch, outFactor ?? 1);
+          }
         }
         continue;
       }
@@ -374,6 +392,17 @@ export class ExportEngine {
           compositor.setActiveLUT(null);
           compositor.clearSegmentationMask();
           compositor.drawClip(tex, props, cw, ch, factor);
+        } else if (clip.properties.drawing && drawRenderer) {
+          const drawing = clip.properties.drawing;
+          const frameIdx = getDrawFrameIdx(clip, time);
+          const strokes = drawing.frames?.[frameIdx]?.strokes;
+          if (strokes?.length) {
+            const props = resolveProps(clip, time);
+            const canvas = drawRenderer.renderFrame(strokes, cw, ch);
+            compositor.setActiveLUT(null);
+            compositor.clearSegmentationMask();
+            compositor.drawClip(canvas, props, cw, ch, factor);
+          }
         }
         continue;
       }

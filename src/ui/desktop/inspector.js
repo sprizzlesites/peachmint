@@ -51,6 +51,7 @@ export class Inspector {
     const p = clip.properties;
     const hasKF = (path) => (clip.keyframes[path]?.length ?? 0) > 0;
     const isTextClip = !clip.assetId && clip.properties.text != null;
+    const isDrawClip = !clip.assetId && clip.properties.drawing != null;
 
     this._el.querySelector('#pm-insp-header').innerHTML = `
       <span class="pm-insp-title">Clip</span>
@@ -80,6 +81,24 @@ export class Inspector {
         ${row('Type',   asset.type ?? '—')}
         ${asset.width ? row('Resolution', `${asset.width}×${asset.height}`) : ''}
         ${asset.duration ? row('Media dur.', formatSec(asset.duration)) : ''}
+      </div>` : ''}
+
+      ${isDrawClip ? `
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Draw Layer</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Animation FPS</span>
+          <input type="number" class="pm-insp-num pm-draw-fps-input" id="pm-draw-fps-input"
+                 value="${p.drawing?.fps ?? 12}" min="1" max="60" step="1" aria-label="Animation FPS">
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Frames drawn</span>
+          <span class="pm-insp-row-value">${Object.keys(p.drawing?.frames ?? {}).length}</span>
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label"></span>
+          <button class="pm-btn-sm pm-btn-ghost" id="pm-draw-clear-all">Clear all</button>
+        </div>
       </div>` : ''}
 
       ${isTextClip ? `
@@ -204,6 +223,7 @@ export class Inspector {
         ` : ''}
       </div>
 
+      ${!isDrawClip ? `
       <div class="pm-insp-section">
         <div class="pm-insp-section-label">AI Segmentation</div>
         <div class="pm-insp-row">
@@ -224,7 +244,7 @@ export class Inspector {
         <div class="pm-insp-row">
           <span class="pm-insp-row-label" style="font-size:0.65rem;color:var(--text-dim)">Loads MediaPipe on first use</span>
         </div>
-      </div>
+      </div>` : ''}
 
       <div class="pm-insp-section">
         <div class="pm-insp-section-label">Transition</div>
@@ -298,6 +318,11 @@ export class Inspector {
     segEnabledEl?.addEventListener('change', () => this._onSegEnabledChange(segEnabledEl.checked));
     const segInvertEl = this._el.querySelector('.pm-seg-invert');
     segInvertEl?.addEventListener('change', () => this._onSegInvertChange(segInvertEl.checked));
+
+    // Wire draw layer controls
+    const drawFpsEl = this._el.querySelector('#pm-draw-fps-input');
+    drawFpsEl?.addEventListener('change', () => this._onDrawFpsChange(parseInt(drawFpsEl.value, 10) || 12));
+    this._el.querySelector('#pm-draw-clear-all')?.addEventListener('click', () => this._onDrawClearAll());
 
     // Wire transition controls
     const trTypeEl = this._el.querySelector('.pm-tr-type');
@@ -470,6 +495,29 @@ export class Inspector {
       label: inverted ? 'Invert segmentation mask' : 'Un-invert segmentation mask',
       execute: () => { (clip.properties.seg ??= {}).invert = inverted; this._pm.markDirty(); },
       undo:    () => { (clip.properties.seg ??= {}).invert = old;      this._pm.markDirty(); },
+    });
+  }
+
+  _onDrawFpsChange(fps) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project || !clip.properties.drawing) return;
+    const clamped = Math.max(1, Math.min(60, fps));
+    const old = clip.properties.drawing.fps ?? 12;
+    this._history.execute({
+      label: 'Set draw FPS',
+      execute: () => { clip.properties.drawing.fps = clamped; this._pm.markDirty(); },
+      undo:    () => { clip.properties.drawing.fps = old;     this._pm.markDirty(); },
+    });
+  }
+
+  _onDrawClearAll() {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project || !clip.properties.drawing) return;
+    const prev = JSON.parse(JSON.stringify(clip.properties.drawing.frames ?? {}));
+    this._history.execute({
+      label: 'Clear all draw frames',
+      execute: () => { clip.properties.drawing.frames = {}; this._pm.markDirty(); this.showClip(clip); },
+      undo:    () => { clip.properties.drawing.frames = prev; this._pm.markDirty(); this.showClip(clip); },
     });
   }
 

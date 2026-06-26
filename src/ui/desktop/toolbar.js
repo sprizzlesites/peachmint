@@ -53,6 +53,8 @@ export class Toolbar {
                   title="Razor / split tool (C)" aria-label="Razor tool" aria-pressed="false">✂</button>
           <button class="pm-tb-tool" id="tb-tool-hand" data-tool="hand"
                   title="Hand / scroll tool (H)" aria-label="Hand tool" aria-pressed="false">✋</button>
+          <button class="pm-tb-tool" id="tb-tool-draw" data-tool="draw"
+                  title="Draw tool (D)" aria-label="Draw tool" aria-pressed="false">✏</button>
         </div>
         <div class="pm-tb-sep" role="separator"></div>
 
@@ -100,6 +102,7 @@ export class Toolbar {
       if (e.key === 'v' || e.key === 'V') { this._setActiveTool('pointer'); cbs.onToolChange?.('pointer'); }
       if (e.key === 'c' || e.key === 'C') { this._setActiveTool('razor'); cbs.onToolChange?.('razor'); }
       if (e.key === 'h' || e.key === 'H') { this._setActiveTool('hand'); cbs.onToolChange?.('hand'); }
+      if (e.key === 'd' || e.key === 'D') { this._setActiveTool('draw'); cbs.onToolChange?.('draw'); }
     });
   }
 

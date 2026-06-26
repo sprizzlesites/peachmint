@@ -15,9 +15,10 @@
 
 import { Compositor }                            from './compositor.js';
 import { DecoderPool }                           from './decoder.js';
-import { clipsAtTime, totalDuration, interpolate, transitionClipsAtTime, getTransitionOutFactor } from './edl.js';
+import { clipsAtTime, totalDuration, interpolate, transitionClipsAtTime, getTransitionOutFactor, getDrawFrameIdx } from './edl.js';
 import { parseCube, parse3dl }                   from './lut.js';
 import { TextRenderer }                          from './text-renderer.js';
+import { DrawRenderer }                          from './draw-renderer.js';
 
 export class PreviewEngine extends EventTarget {
   /**
@@ -43,11 +44,17 @@ export class PreviewEngine extends EventTarget {
     this._fontCache   = new Map(); // fontFamily → true/false (loaded/failed)
     this._textRenderer = null;
     this._segEngine    = null;
+    this._drawRenderer = null;
   }
 
   _getTextRenderer() {
     if (!this._textRenderer) this._textRenderer = new TextRenderer();
     return this._textRenderer;
+  }
+
+  _getDrawRenderer() {
+    if (!this._drawRenderer) this._drawRenderer = new DrawRenderer();
+    return this._drawRenderer;
   }
 
   async _ensureSegEngine() {
@@ -94,6 +101,8 @@ export class PreviewEngine extends EventTarget {
     this._textRenderer = null;
     this._segEngine?.dispose();
     this._segEngine = null;
+    this._drawRenderer?.dispose();
+    this._drawRenderer = null;
     this._decoders?.dispose();
     this._compositor.dispose();
     this._ready = false;
@@ -195,7 +204,7 @@ export class PreviewEngine extends EventTarget {
         if (track.type === 'audio') continue;
         const outFactor = getTransitionOutFactor(clip, time);
 
-        // Text clip: no assetId, render via Canvas 2D
+        // Synthetic clip: no assetId — text or draw
         if (!clip.assetId) {
           if (clip.properties.text) {
             const props = resolveAnimatedProps(clip, time);
@@ -204,6 +213,17 @@ export class PreviewEngine extends EventTarget {
             this._compositor.setActiveLUT(null);
             this._compositor.clearSegmentationMask();
             this._compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
+          } else if (clip.properties.drawing) {
+            const drawing = clip.properties.drawing;
+            const frameIdx = getDrawFrameIdx(clip, time);
+            const strokes = drawing.frames?.[frameIdx]?.strokes;
+            if (strokes?.length) {
+              const props = resolveAnimatedProps(clip, time);
+              const canvas = this._getDrawRenderer().renderFrame(strokes, cw, ch);
+              this._compositor.setActiveLUT(null);
+              this._compositor.clearSegmentationMask();
+              this._compositor.drawClip(canvas, props, cw, ch, outFactor ?? 1);
+            }
           }
           continue;
         }
@@ -255,6 +275,17 @@ export class PreviewEngine extends EventTarget {
             this._compositor.setActiveLUT(null);
             this._compositor.clearSegmentationMask();
             this._compositor.drawClip(tex, props, cw, ch, factor);
+          } else if (clip.properties.drawing) {
+            const drawing = clip.properties.drawing;
+            const frameIdx = getDrawFrameIdx(clip, time);
+            const strokes = drawing.frames?.[frameIdx]?.strokes;
+            if (strokes?.length) {
+              const props = resolveAnimatedProps(clip, time);
+              const canvas = this._getDrawRenderer().renderFrame(strokes, cw, ch);
+              this._compositor.setActiveLUT(null);
+              this._compositor.clearSegmentationMask();
+              this._compositor.drawClip(canvas, props, cw, ch, factor);
+            }
           }
           continue;
         }

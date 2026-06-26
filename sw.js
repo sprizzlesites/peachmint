@@ -3,7 +3,7 @@
 // Also patches same-origin responses with COOP/COEP headers so that
 // crossOriginIsolated = true, enabling SharedArrayBuffer for ffmpeg.wasm.
 
-const CACHE_NAME = 'peachmint-v14';
+const CACHE_NAME = 'peachmint-v15';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -30,6 +30,7 @@ const APP_SHELL = [
   '/src/engine/ffmpeg-engine.js',
   '/src/ui/mobile/shell.js',
   '/src/engine/segmentation.js',
+  '/src/engine/draw-renderer.js',
 ];
 
 self.addEventListener('install', (e) => {
