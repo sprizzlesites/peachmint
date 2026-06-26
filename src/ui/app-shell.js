@@ -124,7 +124,7 @@ function _hideLoadingScreen() {
 async function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   try {
-    await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.register('./sw.js');
     // If not cross-origin isolated yet, do a one-time reload after the SW
     // takes control so that it can serve our pages with COOP/COEP headers,
     // enabling SharedArrayBuffer (required for ffmpeg.wasm fallback).

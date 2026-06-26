@@ -2,39 +2,42 @@
 // Strategy: cache-first for app shell assets; network-first for CDN deps
 // Also patches same-origin responses with COOP/COEP headers so that
 // crossOriginIsolated = true, enabling SharedArrayBuffer for ffmpeg.wasm.
+//
+// All APP_SHELL paths are relative to the SW location so the app works at
+// any deployment sub-path (e.g. GitHub Pages /peachmint/ or a custom domain /).
 
-const CACHE_NAME = 'peachmint-v24';
+const CACHE_NAME = 'peachmint-v25';
 const APP_SHELL = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/src/ui/app-shell.js',
-  '/src/ui/capability-panel.js',
-  '/src/engine/capabilities.js',
-  '/src/engine/storage.js',
-  '/src/engine/project.js',
-  '/src/engine/edl.js',
-  '/src/engine/history.js',
-  '/src/ui/desktop/shell.js',
-  '/src/ui/desktop/timeline.js',
-  '/src/ui/desktop/toolbar.js',
-  '/src/ui/desktop/inspector.js',
-  '/src/ui/desktop/media-library.js',
-  '/src/engine/compositor.js',
-  '/src/engine/decoder.js',
-  '/src/engine/preview-engine.js',
-  '/src/engine/audio-engine.js',
-  '/src/engine/export-engine.js',
-  '/src/engine/lut.js',
-  '/src/engine/text-renderer.js',
-  '/src/engine/ffmpeg-engine.js',
-  '/src/ui/mobile/shell.js',
-  '/src/engine/segmentation.js',
-  '/src/engine/draw-renderer.js',
-  '/src/engine/tracker.js',
-  '/src/engine/waveform.js',
-  '/src/engine/captions.js',
-  '/src/engine/proxy-engine.js',
+  './',
+  './index.html',
+  './manifest.json',
+  './src/ui/app-shell.js',
+  './src/ui/capability-panel.js',
+  './src/engine/capabilities.js',
+  './src/engine/storage.js',
+  './src/engine/project.js',
+  './src/engine/edl.js',
+  './src/engine/history.js',
+  './src/ui/desktop/shell.js',
+  './src/ui/desktop/timeline.js',
+  './src/ui/desktop/toolbar.js',
+  './src/ui/desktop/inspector.js',
+  './src/ui/desktop/media-library.js',
+  './src/engine/compositor.js',
+  './src/engine/decoder.js',
+  './src/engine/preview-engine.js',
+  './src/engine/audio-engine.js',
+  './src/engine/export-engine.js',
+  './src/engine/lut.js',
+  './src/engine/text-renderer.js',
+  './src/engine/ffmpeg-engine.js',
+  './src/ui/mobile/shell.js',
+  './src/engine/segmentation.js',
+  './src/engine/draw-renderer.js',
+  './src/engine/tracker.js',
+  './src/engine/waveform.js',
+  './src/engine/captions.js',
+  './src/engine/proxy-engine.js',
 ];
 
 self.addEventListener('install', (e) => {
@@ -87,7 +90,11 @@ self.addEventListener('fetch', (e) => {
           return addCOIHeaders(resp);
         } catch {
           // Offline fallback: serve index.html for navigation requests
-          if (request.mode === 'navigate') return addCOIHeaders(await caches.match('/index.html'));
+          // Use new URL() to build the absolute URL from a relative path
+          if (request.mode === 'navigate') {
+            const indexUrl = new URL('./index.html', self.location.href);
+            return addCOIHeaders(await caches.match(indexUrl.href));
+          }
         }
       })
     );
