@@ -194,27 +194,29 @@ export class PreviewEngine extends EventTarget {
     this._rendering = true;
 
     try {
-      const bg = this._project.canvas?.background;
-      this._compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
-      this._compositor.setTime(time);
-
       const cw = this._project.canvas.width;
       const ch = this._project.canvas.height;
+
+      // Phase 1: Collect all draw operations asynchronously.
+      // The canvas keeps showing the previous frame during all awaits — no black flash.
+      const ops = [];
+
+      const _pushClip = (src, props, w, h, alpha, lut, seg) =>
+        ops.push({ kind: 'clip', src, props, w, h, alpha, lut, seg });
+      const _pushSolid = (color) => ops.push({ kind: 'solid', color });
+      const _pushAdj   = (props, lut) => ops.push({ kind: 'adj', props, lut });
 
       const active = clipsAtTime(this._project, time);
       for (const { clip, track } of active) {
         if (track.type === 'audio') continue;
-        const outFactor = getTransitionOutFactor(clip, time);
+        const outFactor = getTransitionOutFactor(clip, time) ?? 1;
 
-        // Synthetic clip: no assetId — text, draw, or adjustment
         if (!clip.assetId) {
           if (clip.properties.text) {
             const props = resolveAnimatedProps(clip, time);
             await this._ensureFont(props.text?.fontFamily);
             const tex = this._getTextRenderer().render(props.text, cw, ch);
-            this._compositor.setActiveLUT(null);
-            this._compositor.clearSegmentationMask();
-            this._compositor.drawClip(tex, props, cw, ch, outFactor ?? 1);
+            _pushClip(tex, props, cw, ch, outFactor, null, null);
           } else if (clip.properties.drawing) {
             const drawing = clip.properties.drawing;
             const frameIdx = getDrawFrameIdx(clip, time);
@@ -222,15 +224,12 @@ export class PreviewEngine extends EventTarget {
             if (strokes?.length) {
               const props = resolveAnimatedProps(clip, time);
               const canvas = this._getDrawRenderer().renderFrame(strokes, cw, ch);
-              this._compositor.setActiveLUT(null);
-              this._compositor.clearSegmentationMask();
-              this._compositor.drawClip(canvas, props, cw, ch, outFactor ?? 1);
+              _pushClip(canvas, props, cw, ch, outFactor, null, null);
             }
           } else if (clip.properties.adjustment) {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
-            this._compositor.setActiveLUT(lutTex);
-            this._compositor.applyAdjustment(props, cw, ch);
+            _pushAdj(props, lutTex);
           }
           continue;
         }
@@ -243,22 +242,17 @@ export class PreviewEngine extends EventTarget {
           if (cue) {
             const props = resolveAnimatedProps(clip, time);
             const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
-            this._compositor.setActiveLUT(null);
-            this._compositor.clearSegmentationMask();
-            this._compositor.drawClip(capCanvas, props, cw, ch, outFactor ?? 1);
+            _pushClip(capCanvas, props, cw, ch, outFactor, null, null);
           }
           continue;
         }
 
         if (!asset || !asset.storageKey) {
-          this._compositor.setActiveLUT(null);
-          this._compositor.clearSegmentationMask();
-          this._compositor.drawSolid([0.15, 0.04, 0.04, 1]);
+          _pushSolid([0.15, 0.04, 0.04, 1]);
           continue;
         }
 
         const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
-
         try {
           const dec = await this._decoders.getDecoder(this._proxyAsset(asset));
           await dec.seekTo(clipTime);
@@ -266,25 +260,20 @@ export class PreviewEngine extends EventTarget {
           if (src) {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
-            this._compositor.setActiveLUT(lutTex);
+            let seg = null;
             if (props.seg?.enabled) {
               const segEng = await this._ensureSegEngine();
               const segResult = await segEng.segment(src);
-              if (segResult) this._compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
-              else this._compositor.clearSegmentationMask();
-            } else {
-              this._compositor.clearSegmentationMask();
+              if (segResult) seg = { mask: segResult.mask, w: segResult.width, h: segResult.height };
             }
-            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor ?? 1);
+            _pushClip(src, props, dec.naturalWidth, dec.naturalHeight, outFactor, lutTex, seg);
           }
         } catch {
-          this._compositor.setActiveLUT(null);
-          this._compositor.clearSegmentationMask();
-          this._compositor.drawSolid([0.2, 0.05, 0.05, 1]);
+          _pushSolid([0.2, 0.05, 0.05, 1]);
         }
       }
 
-      // Render clips that are fading in via a cross-dissolve transition
+      // Transition clips (fade-in dissolve)
       const transIn = transitionClipsAtTime(this._project, time);
       for (const { clip, track, factor, trStart } of transIn) {
         if (track.type === 'audio') continue;
@@ -294,9 +283,7 @@ export class PreviewEngine extends EventTarget {
             const props = resolveAnimatedProps(clip, time);
             await this._ensureFont(props.text?.fontFamily);
             const tex = this._getTextRenderer().render(props.text, cw, ch);
-            this._compositor.setActiveLUT(null);
-            this._compositor.clearSegmentationMask();
-            this._compositor.drawClip(tex, props, cw, ch, factor);
+            _pushClip(tex, props, cw, ch, factor, null, null);
           } else if (clip.properties.drawing) {
             const drawing = clip.properties.drawing;
             const frameIdx = getDrawFrameIdx(clip, time);
@@ -304,9 +291,7 @@ export class PreviewEngine extends EventTarget {
             if (strokes?.length) {
               const props = resolveAnimatedProps(clip, time);
               const canvas = this._getDrawRenderer().renderFrame(strokes, cw, ch);
-              this._compositor.setActiveLUT(null);
-              this._compositor.clearSegmentationMask();
-              this._compositor.drawClip(canvas, props, cw, ch, factor);
+              _pushClip(canvas, props, cw, ch, factor, null, null);
             }
           }
           continue;
@@ -319,9 +304,7 @@ export class PreviewEngine extends EventTarget {
           if (cue) {
             const props = resolveAnimatedProps(clip, time);
             const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
-            this._compositor.setActiveLUT(null);
-            this._compositor.clearSegmentationMask();
-            this._compositor.drawClip(capCanvas, props, cw, ch, factor);
+            _pushClip(capCanvas, props, cw, ch, factor, null, null);
           }
           continue;
         }
@@ -334,19 +317,35 @@ export class PreviewEngine extends EventTarget {
           if (src) {
             const props = resolveAnimatedProps(clip, time);
             const lutTex = await this._resolveLUT(props.color?.lut);
-            this._compositor.setActiveLUT(lutTex);
+            let seg = null;
             if (props.seg?.enabled) {
               const segEng = await this._ensureSegEngine();
               const segResult = await segEng.segment(src);
-              if (segResult) this._compositor.setSegmentationMask(segResult.mask, segResult.width, segResult.height);
-              else this._compositor.clearSegmentationMask();
-            } else {
-              this._compositor.clearSegmentationMask();
+              if (segResult) seg = { mask: segResult.mask, w: segResult.width, h: segResult.height };
             }
-            this._compositor.drawClip(src, props, dec.naturalWidth, dec.naturalHeight, factor);
+            _pushClip(src, props, dec.naturalWidth, dec.naturalHeight, factor, lutTex, seg);
           }
-        } catch {
+        } catch { /* skip transition clip on error */ }
+      }
+
+      // Phase 2: Atomically clear + draw all collected ops (synchronous — no black flash).
+      const bg = this._project.canvas?.background;
+      this._compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
+      this._compositor.setTime(time);
+
+      for (const op of ops) {
+        if (op.kind === 'solid') {
+          this._compositor.setActiveLUT(null);
           this._compositor.clearSegmentationMask();
+          this._compositor.drawSolid(op.color);
+        } else if (op.kind === 'adj') {
+          this._compositor.setActiveLUT(op.lut);
+          this._compositor.applyAdjustment(op.props, cw, ch);
+        } else {
+          this._compositor.setActiveLUT(op.lut ?? null);
+          if (op.seg) this._compositor.setSegmentationMask(op.seg.mask, op.seg.w, op.seg.h);
+          else this._compositor.clearSegmentationMask();
+          this._compositor.drawClip(op.src, op.props, op.w, op.h, op.alpha);
         }
       }
     } finally {

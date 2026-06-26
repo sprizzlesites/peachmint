@@ -213,6 +213,7 @@ class DesktopShell {
     if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
     const overlayCanvas = this._el.querySelector('#pm-draw-overlay');
     if (overlayCanvas) { overlayCanvas.width = width; overlayCanvas.height = height; }
+    this._previewEngine?.seekTo(0);
   }
 
   _onProjectClosed() {

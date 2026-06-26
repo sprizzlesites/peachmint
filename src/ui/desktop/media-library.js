@@ -678,7 +678,7 @@ function assetMeta(asset) {
   if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
   if (asset.duration != null && asset.duration > 0) parts.push(`${asset.duration.toFixed(1)}s`);
   if (asset.mimeType) parts.push(asset.mimeType.split('/')[1]?.toUpperCase() ?? asset.mimeType);
-  return parts.join(' · ') || asset.type ?? '';
+  return parts.join(' · ') || (asset.type ?? '');
 }
 
 function escHtml(s) {

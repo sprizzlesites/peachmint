@@ -104,6 +104,7 @@ class MobileShell {
     const { width, height } = project.canvas;
     const wrap = this._el.querySelector('.pm-m-canvas-wrap');
     if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
+    this._previewEngine?.seekTo(0);
     this._renderTimeline();
     this._showTab('library');
   }
