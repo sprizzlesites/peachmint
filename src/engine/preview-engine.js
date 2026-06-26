@@ -259,7 +259,7 @@ export class PreviewEngine extends EventTarget {
         const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
 
         try {
-          const dec = await this._decoders.getDecoder(asset);
+          const dec = await this._decoders.getDecoder(this._proxyAsset(asset));
           await dec.seekTo(clipTime);
           const src = dec.getSource();
           if (src) {
@@ -327,7 +327,7 @@ export class PreviewEngine extends EventTarget {
         if (!asset?.storageKey) continue;
         const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
         try {
-          const dec = await this._decoders.getDecoder(asset);
+          const dec = await this._decoders.getDecoder(this._proxyAsset(asset));
           await dec.seekTo(clipMediaTime);
           const src = dec.getSource();
           if (src) {
@@ -351,6 +351,11 @@ export class PreviewEngine extends EventTarget {
     } finally {
       this._rendering = false;
     }
+  }
+
+  _proxyAsset(asset) {
+    if (asset?.proxyKey) return { ...asset, storageKey: asset.proxyKey, id: asset.id + '__proxy' };
+    return asset;
   }
 
   async _resolveLUT(assetId) {

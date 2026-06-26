@@ -10,6 +10,8 @@
 import { addAsset, addTrack, addClip } from '../../engine/edl.js';
 import { parseSRT, parseVTT }          from '../../engine/captions.js';
 
+const PROXY_ENGINE_URL = new URL('../../engine/proxy-engine.js', import.meta.url).href;
+
 export class MediaLibrary {
   /**
    * @param {HTMLElement} container
@@ -22,6 +24,7 @@ export class MediaLibrary {
     this._storage = storage;
     this._onProjectChanged = onProjectChanged ?? (() => {});
     this._project = null;
+    this._proxyInProgress = new Map(); // assetId → progress 0-1 | null (done)
     this._mount();
   }
 
@@ -356,23 +359,36 @@ export class MediaLibrary {
       el.setAttribute('role', 'listitem');
       el.setAttribute('draggable', 'true');
       el.dataset.assetId = asset.id;
+
+      const proxyHtml = this._proxyButtonHtml(asset);
+
       el.innerHTML = `
         <span class="pm-lib-asset-icon" aria-hidden="true">${assetIcon(asset.type)}</span>
         <div class="pm-lib-asset-info">
           <span class="pm-lib-asset-name" title="${escHtml(asset.name ?? '')}">${escHtml(asset.name ?? 'Untitled')}</span>
           <span class="pm-lib-asset-meta">${assetMeta(asset)}</span>
         </div>
+        ${proxyHtml}
         <button class="pm-lib-asset-add" data-asset-id="${escHtml(asset.id)}"
                 title="Add to timeline" aria-label="Add ${escHtml(asset.name ?? 'asset')} to timeline">+</button>
         <button class="pm-lib-asset-del" data-asset-id="${escHtml(asset.id)}"
                 title="Remove asset" aria-label="Remove ${escHtml(asset.name ?? 'asset')}">✕</button>
       `;
 
-      // Drag to timeline (Phase 1.6 will complete drop handling on the timeline side)
       el.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('application/peachmint-asset', asset.id);
         e.dataTransfer.effectAllowed = 'copy';
       });
+
+      if (asset.type === 'video') {
+        const proxyBtn = el.querySelector('.pm-lib-asset-proxy');
+        if (proxyBtn) {
+          proxyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._handleProxyClick(asset, el);
+          });
+        }
+      }
 
       el.querySelector('.pm-lib-asset-add')?.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -386,6 +402,81 @@ export class MediaLibrary {
 
       this._listEl.appendChild(el);
     }
+  }
+
+  _proxyButtonHtml(asset) {
+    if (asset.type !== 'video') return '';
+    const inProgress = this._proxyInProgress.get(asset.id);
+    if (inProgress !== undefined) {
+      const pct = Math.round(inProgress * 100);
+      return `<button class="pm-lib-asset-proxy pm-lib-asset-proxy--busy" disabled
+                      title="Generating proxy…" aria-label="Generating proxy ${pct}%">${pct}%</button>`;
+    }
+    if (asset.proxyKey) {
+      return `<button class="pm-lib-asset-proxy pm-lib-asset-proxy--done"
+                      title="Proxy ready — click to remove" aria-label="Remove proxy">✓P</button>`;
+    }
+    const { ProxyEngine } = window._proxyEngineModule ?? {};
+    const avail = ProxyEngine
+      ? ProxyEngine.isAvailable
+      : (typeof SharedArrayBuffer !== 'undefined' && (typeof crossOriginIsolated === 'undefined' || crossOriginIsolated));
+    return avail
+      ? `<button class="pm-lib-asset-proxy"
+                 title="Generate 480p proxy for smooth preview" aria-label="Generate proxy">P</button>`
+      : `<button class="pm-lib-asset-proxy" disabled
+                 title="Proxy requires Cross-Origin Isolation (reload page)" aria-label="Proxy unavailable">P</button>`;
+  }
+
+  _handleProxyClick(asset, rowEl) {
+    if (asset.proxyKey) {
+      // Remove proxy
+      const oldKey = asset.proxyKey;
+      asset.proxyKey = null;
+      this._pm.markDirty();
+      this._storage.deleteMedia(oldKey).catch(() => {});
+      this._refreshProxyBtn(asset, rowEl);
+      return;
+    }
+    this._generateProxy(asset, rowEl);
+  }
+
+  async _generateProxy(asset, rowEl) {
+    if (this._proxyInProgress.has(asset.id)) return;
+    this._proxyInProgress.set(asset.id, 0);
+    this._refreshProxyBtn(asset, rowEl);
+
+    try {
+      if (!window._proxyEngineModule) {
+        window._proxyEngineModule = await import(PROXY_ENGINE_URL);
+      }
+      const { ProxyEngine } = window._proxyEngineModule;
+      const eng = new ProxyEngine({ storage: this._storage });
+      const proxyKey = await eng.generate(asset, (p) => {
+        this._proxyInProgress.set(asset.id, p);
+        this._refreshProxyBtn(asset, rowEl);
+      });
+      asset.proxyKey = proxyKey;
+      this._pm.markDirty();
+    } catch (err) {
+      this._showError(`Proxy failed: ${err.message ?? err}`);
+    } finally {
+      this._proxyInProgress.delete(asset.id);
+      this._refreshProxyBtn(asset, rowEl);
+    }
+  }
+
+  _refreshProxyBtn(asset, rowEl) {
+    const existing = rowEl.querySelector('.pm-lib-asset-proxy');
+    if (!existing) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = this._proxyButtonHtml(asset);
+    const next = tmp.firstElementChild;
+    if (!next) { existing.remove(); return; }
+    next.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._handleProxyClick(asset, rowEl);
+    });
+    existing.replaceWith(next);
   }
 
   _currentFilter() {
@@ -531,6 +622,17 @@ function injectStyles() {
     .pm-lib-asset:hover .pm-lib-asset-del { opacity:1; }
     .pm-lib-asset-add:hover { background:var(--accent-mint); color:#181820; }
     .pm-lib-asset-del:hover { background:var(--accent-err); color:#fff; }
+
+    .pm-lib-asset-proxy { background:transparent; border:1px solid var(--border);
+      color:var(--text-dim); height:18px; min-width:22px; padding:0 3px; border-radius:3px;
+      cursor:pointer; font-size:0.6rem; font-family:var(--font-mono); font-weight:700;
+      flex-shrink:0; opacity:0; display:flex; align-items:center; justify-content:center; }
+    .pm-lib-asset:hover .pm-lib-asset-proxy { opacity:1; }
+    .pm-lib-asset-proxy:hover:not(:disabled) { border-color:var(--accent-peach); color:var(--accent-peach); }
+    .pm-lib-asset-proxy:disabled { cursor:default; opacity:0.4; }
+    .pm-lib-asset-proxy--done { border-color:var(--accent-mint); color:var(--accent-mint); }
+    .pm-lib-asset-proxy--done:hover { border-color:var(--accent-err) !important; color:var(--accent-err) !important; }
+    .pm-lib-asset-proxy--busy { opacity:1 !important; border-color:var(--accent-purple); color:var(--accent-purple); }
 
     .pm-lib-drop-hint { position:absolute; inset:0; background:rgba(189,147,249,0.15);
       border:2px dashed var(--accent-purple); border-radius:6px; display:none;
