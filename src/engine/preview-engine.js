@@ -19,6 +19,7 @@ import { clipsAtTime, totalDuration, interpolate, transitionClipsAtTime, getTran
 import { parseCube, parse3dl }                   from './lut.js';
 import { TextRenderer }                          from './text-renderer.js';
 import { DrawRenderer }                          from './draw-renderer.js';
+import { findActiveCue, renderCaptionToCanvas }  from './captions.js';
 
 export class PreviewEngine extends EventTarget {
   /**
@@ -234,8 +235,23 @@ export class PreviewEngine extends EventTarget {
         }
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
+
+        if (asset?.type === 'caption') {
+          const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+          const cue = findActiveCue(asset.captions ?? [], clipTime);
+          if (cue) {
+            const props = resolveAnimatedProps(clip, time);
+            const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
+            this._compositor.setActiveLUT(null);
+            this._compositor.clearSegmentationMask();
+            this._compositor.drawClip(capCanvas, props, cw, ch, outFactor ?? 1);
+          }
+          continue;
+        }
+
         if (!asset || !asset.storageKey) {
           this._compositor.setActiveLUT(null);
+          this._compositor.clearSegmentationMask();
           this._compositor.drawSolid([0.15, 0.04, 0.04, 1]);
           continue;
         }
@@ -296,6 +312,18 @@ export class PreviewEngine extends EventTarget {
         }
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
+        if (asset?.type === 'caption') {
+          const clipTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
+          const cue = findActiveCue(asset.captions ?? [], clipTime);
+          if (cue) {
+            const props = resolveAnimatedProps(clip, time);
+            const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
+            this._compositor.setActiveLUT(null);
+            this._compositor.clearSegmentationMask();
+            this._compositor.drawClip(capCanvas, props, cw, ch, factor);
+          }
+          continue;
+        }
         if (!asset?.storageKey) continue;
         const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
         try {

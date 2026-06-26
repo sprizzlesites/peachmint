@@ -18,6 +18,7 @@ import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFact
 import { parseCube, parse3dl }     from './lut.js';
 import { TextRenderer }            from './text-renderer.js';
 import { DrawRenderer }            from './draw-renderer.js';
+import { findActiveCue, renderCaptionToCanvas } from './captions.js';
 
 const MP4_MUXER_CDN  = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
 const WEBM_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/webm-muxer@3.2.0/+esm';
@@ -352,6 +353,20 @@ export class ExportEngine {
       }
 
       const asset = project.assets.find((a) => a.id === clip.assetId);
+
+      if (asset?.type === 'caption') {
+        const clipTime = (time - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+        const cue = findActiveCue(asset.captions ?? [], clipTime);
+        if (cue) {
+          const props = resolveProps(clip, time);
+          const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
+          compositor.setActiveLUT(null);
+          compositor.clearSegmentationMask();
+          compositor.drawClip(capCanvas, props, cw, ch, outFactor ?? 1);
+        }
+        continue;
+      }
+
       if (!asset?.storageKey) {
         compositor.setActiveLUT(null);
         compositor.clearSegmentationMask();
@@ -415,6 +430,18 @@ export class ExportEngine {
       }
 
       const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (asset?.type === 'caption') {
+        const clipTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
+        const cue = findActiveCue(asset.captions ?? [], clipTime);
+        if (cue) {
+          const props = resolveProps(clip, time);
+          const capCanvas = renderCaptionToCanvas(cue.text, props.caption ?? {}, cw, ch);
+          compositor.setActiveLUT(null);
+          compositor.clearSegmentationMask();
+          compositor.drawClip(capCanvas, props, cw, ch, factor);
+        }
+        continue;
+      }
       if (!asset?.storageKey) continue;
       const clipMediaTime = (clip.trimIn ?? 0) + (time - trStart) * (clip.speed ?? 1);
       try {

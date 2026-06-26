@@ -8,6 +8,7 @@
  */
 
 import { addAsset, addTrack, addClip } from '../../engine/edl.js';
+import { parseSRT, parseVTT }          from '../../engine/captions.js';
 
 export class MediaLibrary {
   /**
@@ -72,7 +73,7 @@ export class MediaLibrary {
     // Hidden file picker (no visible input, triggered programmatically)
     this._filePicker = document.createElement('input');
     this._filePicker.type = 'file';
-    this._filePicker.accept = 'video/*,audio/*,image/*,.ttf,.otf,.woff,.woff2';
+    this._filePicker.accept = 'video/*,audio/*,image/*,.ttf,.otf,.woff,.woff2,.srt,.vtt';
     this._filePicker.multiple = true;
     this._filePicker.style.display = 'none';
     this._el.appendChild(this._filePicker);
@@ -154,7 +155,8 @@ export class MediaLibrary {
       const n = f.name.toLowerCase();
       return t.startsWith('video/') || t.startsWith('audio/') || t.startsWith('image/') ||
              t.startsWith('font/') || n.endsWith('.ttf') || n.endsWith('.otf') ||
-             n.endsWith('.woff') || n.endsWith('.woff2');
+             n.endsWith('.woff') || n.endsWith('.woff2') ||
+             n.endsWith('.srt') || n.endsWith('.vtt');
     });
     if (!files.length) return;
 
@@ -164,6 +166,19 @@ export class MediaLibrary {
     for (const file of files) {
       try {
         this._setProgress(true, `Importing "${file.name}" (${imported + 1} / ${files.length})…`);
+
+        // Caption files: parse text only, no OPFS write needed
+        const lname = file.name.toLowerCase();
+        if (lname.endsWith('.srt') || lname.endsWith('.vtt')) {
+          const text   = await file.text();
+          const cues   = lname.endsWith('.srt') ? parseSRT(text) : parseVTT(text);
+          const duration = cues.length ? cues[cues.length - 1].end : 10;
+          addAsset(this._project, { name: file.name, type: 'caption', captions: cues, duration });
+          this._pm.markDirty();
+          imported++;
+          this._renderList(this._currentFilter());
+          continue;
+        }
 
         // Probe metadata before reading the full buffer
         const meta = await probeFile(file);
@@ -203,6 +218,28 @@ export class MediaLibrary {
 
   _addToTimeline(asset) {
     if (!this._project) return;
+
+    if (asset.type === 'caption') {
+      const cmd = this._history.snapshotCommand(`Add "${asset.name}" to timeline`, (proj) => {
+        let track = proj.tracks.find((t) => t.type === 'overlay');
+        if (!track) track = addTrack(proj, { type: 'overlay' });
+        let endTime = 0;
+        for (const c of track.clips) endTime = Math.max(endTime, c.startTime + c.duration);
+        const clip = addClip(proj, track.id, {
+          assetId:   asset.id,
+          startTime: endTime,
+          duration:  asset.duration || 10,
+          trimIn:    0,
+          trimOut:   asset.duration || 10,
+          speed:     1,
+        });
+        clip.properties.caption = { fontSize: 36, color: '#ffffff', fontFamily: 'sans-serif' };
+      });
+      this._history.execute(cmd);
+      this._onProjectChanged();
+      return;
+    }
+
     const targetType = asset.type === 'audio' ? 'audio' : 'video';
 
     const cmd = this._history.snapshotCommand(`Add "${asset.name}" to timeline`, (proj) => {
@@ -518,16 +555,23 @@ function injectStyles() {
 
 function assetIcon(type) {
   switch (type) {
-    case 'video': return '🎬';
-    case 'audio': return '🎵';
-    case 'image': return '🖼';
-    case 'font':  return 'Aa';
-    case 'lut':   return '🎨';
-    default:      return '📄';
+    case 'video':   return '🎬';
+    case 'audio':   return '🎵';
+    case 'image':   return '🖼';
+    case 'font':    return 'Aa';
+    case 'lut':     return '🎨';
+    case 'caption': return '💬';
+    default:        return '📄';
   }
 }
 
 function assetMeta(asset) {
+  if (asset.type === 'caption') {
+    const parts = [];
+    if (typeof asset.captions?.length === 'number') parts.push(`${asset.captions.length} cues`);
+    if (asset.duration != null && asset.duration > 0) parts.push(`${asset.duration.toFixed(1)}s`);
+    return parts.join(' · ') || 'caption';
+  }
   const parts = [];
   if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
   if (asset.duration != null && asset.duration > 0) parts.push(`${asset.duration.toFixed(1)}s`);

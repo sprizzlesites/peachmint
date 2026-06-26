@@ -51,9 +51,10 @@ export class Inspector {
     const asset = this._pm.project?.assets.find((a) => a.id === clip.assetId);
     const p = clip.properties;
     const hasKF = (path) => (clip.keyframes[path]?.length ?? 0) > 0;
-    const isTextClip = !clip.assetId && clip.properties.text != null;
-    const isDrawClip = !clip.assetId && clip.properties.drawing != null;
-    const isAdjClip  = !clip.assetId && clip.properties.adjustment === true;
+    const isTextClip    = !clip.assetId && clip.properties.text != null;
+    const isDrawClip    = !clip.assetId && clip.properties.drawing != null;
+    const isAdjClip     = !clip.assetId && clip.properties.adjustment === true;
+    const isCaptionClip = !!asset && asset.type === 'caption';
 
     this._el.querySelector('#pm-insp-header').innerHTML = `
       <span class="pm-insp-title">Clip</span>
@@ -160,6 +161,30 @@ export class Inspector {
           </label>
         </div>
         ${propRow('Line Height', 'text.lineHeight', p.text?.lineHeight ?? 1.3, 0.5, 4, 0.05, hasKF('text.lineHeight'))}
+      </div>` : ''}
+
+      ${isCaptionClip ? `
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Caption Style</div>
+        ${row('Cues', String(asset.captions?.length ?? 0))}
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Font Size</span>
+          <input type="number" class="pm-insp-num pm-cap-fontsize" id="pm-cap-fontsize"
+                 value="${p.caption?.fontSize ?? 36}" min="8" max="200" step="1"
+                 aria-label="Caption font size">
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Text Color</span>
+          <input type="color" class="pm-cap-color" id="pm-cap-color"
+                 value="${escHtml(p.caption?.color ?? '#ffffff')}"
+                 aria-label="Caption text color">
+        </div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Font Family</span>
+          <input type="text" class="pm-insp-num pm-cap-fontfamily" id="pm-cap-fontfamily"
+                 style="width:120px" value="${escHtml(p.caption?.fontFamily ?? 'sans-serif')}"
+                 placeholder="sans-serif" aria-label="Caption font family">
+        </div>
       </div>` : ''}
 
       <div class="pm-insp-section">
@@ -373,6 +398,19 @@ export class Inspector {
     textBoldEl?.addEventListener('change', () => this._onTextPropChange('bold', textBoldEl.checked));
     const textItalicEl = this._el.querySelector('.pm-text-italic');
     textItalicEl?.addEventListener('change', () => this._onTextPropChange('italic', textItalicEl.checked));
+
+    // Wire caption controls
+    const capFontSizeEl = this._el.querySelector('#pm-cap-fontsize');
+    capFontSizeEl?.addEventListener('change', () => {
+      const v = parseInt(capFontSizeEl.value, 10);
+      if (!isNaN(v)) this._setCaptionProp('fontSize', Math.max(8, Math.min(200, v)));
+    });
+    const capColorEl = this._el.querySelector('#pm-cap-color');
+    capColorEl?.addEventListener('change', () => this._setCaptionProp('color', capColorEl.value));
+    const capFontFamilyEl = this._el.querySelector('#pm-cap-fontfamily');
+    capFontFamilyEl?.addEventListener('change', () => {
+      this._setCaptionProp('fontFamily', capFontFamilyEl.value.trim() || 'sans-serif');
+    });
   }
 
   showTrack(track) {
@@ -640,6 +678,17 @@ export class Inspector {
     });
   }
 
+  _setCaptionProp(key, value) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project) return;
+    const old = clip.properties.caption?.[key];
+    this._history.execute({
+      label: `Set caption.${key}`,
+      execute: () => { (clip.properties.caption ??= {})[key] = value; this._pm.markDirty(); },
+      undo:    () => { (clip.properties.caption ??= {})[key] = old;   this._pm.markDirty(); },
+    });
+  }
+
   _onImportLUT() {
     if (!this._currentClip || !this._pm.project || !this._storage) return;
     const input = document.createElement('input');
@@ -884,6 +933,8 @@ function injectStyles() {
       min-height:60px; outline:none; line-height:1.4; }
     .pm-insp-textarea:focus { border-color:var(--accent-purple); }
     .pm-text-color { width:36px; height:22px; padding:1px; border:1px solid var(--border);
+      border-radius:4px; cursor:pointer; background:var(--bg-base); }
+    .pm-cap-color { width:36px; height:22px; padding:1px; border:1px solid var(--border);
       border-radius:4px; cursor:pointer; background:var(--bg-base); }
   `;
   document.head.appendChild(s);
