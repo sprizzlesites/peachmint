@@ -32,6 +32,7 @@ export function createProject({ name = 'Untitled Project', width = 1920, height 
     canvas: { width, height, fps, aspectRatio: width / height },
     tracks: [],
     assets: [],
+    markers: [],
   };
 }
 
@@ -179,6 +180,31 @@ export function removeClip(project, clipId) {
     }
   }
   return null;
+}
+
+/** Create a timeline marker object. */
+export function createMarker({ time = 0, label = '', color = '#f1fa8c' } = {}) {
+  return { id: newId('marker'), time, label, color };
+}
+
+/** Add a marker to the project. Returns the new marker. */
+export function addMarker(project, opts = {}) {
+  if (!project.markers) project.markers = [];
+  const marker = createMarker(opts);
+  project.markers.push(marker);
+  project.markers.sort((a, b) => a.time - b.time);
+  touch(project);
+  return marker;
+}
+
+/** Remove a marker by id. Returns removed marker or null. */
+export function removeMarker(project, markerId) {
+  if (!project.markers) return null;
+  const idx = project.markers.findIndex((m) => m.id === markerId);
+  if (idx === -1) return null;
+  const [removed] = project.markers.splice(idx, 1);
+  touch(project);
+  return removed;
 }
 
 /** Register an asset in the project. Returns the asset. */

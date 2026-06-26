@@ -14,7 +14,7 @@
 
 import {
   addTrack, removeTrack, addClip, removeClip,
-  createTrack, totalDuration, splitClip,
+  createTrack, totalDuration, splitClip, createMarker, removeMarker,
 } from '../../engine/edl.js';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -105,6 +105,20 @@ export class Timeline {
 
   setWaveformCache(cache) { this._waveformCache = cache; }
   setAudioEngine(engine)  { this._audioEngine = engine; }
+
+  /** Add a marker at `time` seconds. Called by shell on M key. */
+  addMarker(time) {
+    if (!this._project) return;
+    if (!this._project.markers) this._project.markers = [];
+    const marker = createMarker({ time });
+    this._project.markers.push(marker);
+    this._project.markers.sort((a, b) => a.time - b.time);
+    this._pm.markDirty();
+    this._drawRuler();
+    this._renderMarkerLines();
+    // Open rename input immediately
+    this._showMarkerRenameInput(marker);
+  }
 
   // Align each Ctrl-selected clip so its loudest audio peak lands at the
   // same absolute project time as the first selected clip's peak.
@@ -282,8 +296,17 @@ export class Timeline {
     this._el.querySelector('#pm-tl-add-audio').addEventListener('click', () => this._cmdAddTrack('audio'));
     this._el.querySelector('#pm-tl-add-overlay').addEventListener('click', () => this._cmdAddTrack('overlay'));
 
-    // Ruler click/drag → seek
+    // Ruler click/drag → seek (or marker interaction)
     this._rulerCanvas.addEventListener('pointerdown', (e) => this._onRulerPointerDown(e));
+    this._rulerCanvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const m = this._markerAtRulerX(e);
+      if (m) this._cmdDeleteMarker(m.id);
+    });
+    this._rulerCanvas.addEventListener('dblclick', (e) => {
+      const m = this._markerAtRulerX(e);
+      if (m) { e.preventDefault(); this._showMarkerRenameInput(m); }
+    });
 
     // Clip + lane interactions (delegated)
     this._lanesInner.addEventListener('pointerdown', (e) => this._onLanesPointerDown(e));
@@ -490,6 +513,17 @@ export class Timeline {
       yOffset += h;
     });
 
+    // Marker vertical lines
+    for (const m of (this._project?.markers ?? [])) {
+      const line = document.createElement('div');
+      line.className = 'pm-tl-marker-line';
+      line.id = `pm-tl-ml-${m.id}`;
+      line.dataset.markerId = m.id;
+      line.style.transform = `translateX(${m.time * this._pxPerSec}px)`;
+      line.style.borderLeftColor = m.color ?? '#f1fa8c';
+      this._lanesInner.appendChild(line);
+    }
+
     // Re-append overlays on top
     if (ph)       this._lanesInner.appendChild(ph);
     if (snapLine) this._lanesInner.appendChild(snapLine);
@@ -648,6 +682,39 @@ export class Timeline {
       ctx.fillText(formatTimecode(this._currentTime, fps), Math.min(phX + 4, w - 80), h - 14);
     }
 
+    // Marker flags
+    const markers = this._project?.markers ?? [];
+    for (const m of markers) {
+      const mx = m.time * pps - scrollX;
+      if (mx < -20 || mx > w + 4) continue;
+      const col = m.color ?? '#f1fa8c';
+      // Triangle flag
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(mx, 0);
+      ctx.lineTo(mx + 8, 0);
+      ctx.lineTo(mx, 9);
+      ctx.closePath();
+      ctx.fill();
+      // Vertical line down to ruler bottom
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(mx + 0.5, 9);
+      ctx.lineTo(mx + 0.5, h);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Label (truncated)
+      if (m.label) {
+        ctx.fillStyle = col;
+        ctx.font = '9px "JetBrains Mono", monospace';
+        ctx.textBaseline = 'top';
+        const maxW = 80;
+        ctx.fillText(m.label, mx + 10, 1, maxW);
+      }
+    }
+
     // Bottom border
     ctx.strokeStyle = '#2d2d3e';
     ctx.lineWidth = 1;
@@ -676,6 +743,12 @@ export class Timeline {
   _onRulerPointerDown(e) {
     if (e.button !== 0) return;
     e.preventDefault();
+    const m = this._markerAtRulerX(e);
+    if (m) {
+      this._rulerCanvas.setPointerCapture(e.pointerId);
+      this._drag = { type: 'marker', markerId: m.id, origMarkerTime: m.time, pointerId: e.pointerId };
+      return;
+    }
     this._rulerCanvas.setPointerCapture(e.pointerId);
     this._drag = { type: 'playhead', pointerId: e.pointerId };
     this._seekFromRulerEvent(e);
@@ -802,6 +875,19 @@ export class Timeline {
 
     if (this._drag.type === 'playhead') {
       this._seekFromRulerEvent(e);
+      return;
+    }
+
+    if (this._drag.type === 'marker') {
+      const rect = this._rulerCanvas.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const newTime = Math.max(0, (canvasX + this._scrollLeft) / this._pxPerSec);
+      const marker = (this._project?.markers ?? []).find((m) => m.id === this._drag.markerId);
+      if (marker) {
+        marker.time = newTime;
+        this._drawRuler();
+        this._updateMarkerLines();
+      }
       return;
     }
 
@@ -966,6 +1052,29 @@ export class Timeline {
             },
           });
           this._render();
+        }
+      }
+    }
+
+    if (this._drag.type === 'marker') {
+      const marker = (this._project?.markers ?? []).find((m) => m.id === this._drag.markerId);
+      if (marker) {
+        const newTime  = marker.time;
+        const origTime = this._drag.origMarkerTime;
+        if (Math.abs(newTime - origTime) > 0.001) {
+          this._history.execute({
+            label: 'Move marker',
+            execute: () => {
+              marker.time = newTime;
+              this._project.markers?.sort((a, b) => a.time - b.time);
+              this._pm.markDirty(); this._drawRuler(); this._updateMarkerLines();
+            },
+            undo: () => {
+              marker.time = origTime;
+              this._project.markers?.sort((a, b) => a.time - b.time);
+              this._pm.markDirty(); this._drawRuler(); this._updateMarkerLines();
+            },
+          });
         }
       }
     }
@@ -1224,6 +1333,97 @@ export class Timeline {
     const el = this._el?.querySelector('#pm-tl-snap-line');
     if (el) el.style.opacity = '0';
   }
+
+  // ─── Marker helpers ──────────────────────────────────────────────────────────
+
+  _markerAtRulerX(e) {
+    const rect = this._rulerCanvas.getBoundingClientRect();
+    const canvasX = e.clientX - rect.left;
+    const rulerY  = e.clientY - rect.top;
+    if (rulerY > 14) return null; // only top 14px (flag zone)
+    const timeAtX  = (canvasX + this._scrollLeft) / this._pxPerSec;
+    const threshSec = 8 / this._pxPerSec;
+    return (this._project?.markers ?? []).find((m) => Math.abs(m.time - timeAtX) < threshSec) ?? null;
+  }
+
+  _renderMarkerLines() {
+    if (!this._lanesInner || !this._project) return;
+    this._lanesInner.querySelectorAll('.pm-tl-marker-line').forEach((el) => el.remove());
+    for (const m of (this._project.markers ?? [])) {
+      const line = document.createElement('div');
+      line.className = 'pm-tl-marker-line';
+      line.id = `pm-tl-ml-${m.id}`;
+      line.dataset.markerId = m.id;
+      line.style.transform = `translateX(${m.time * this._pxPerSec}px)`;
+      line.style.borderLeftColor = m.color ?? '#f1fa8c';
+      // Insert before playhead so playhead renders on top
+      const ph = this._lanesInner.querySelector('#pm-tl-playhead');
+      if (ph) this._lanesInner.insertBefore(line, ph);
+      else this._lanesInner.appendChild(line);
+    }
+  }
+
+  _updateMarkerLines() {
+    for (const m of (this._project?.markers ?? [])) {
+      const el = this._lanesInner?.querySelector(`#pm-tl-ml-${m.id}`);
+      if (el) el.style.transform = `translateX(${m.time * this._pxPerSec}px)`;
+    }
+  }
+
+  _cmdDeleteMarker(markerId) {
+    if (!this._project?.markers) return;
+    const marker = this._project.markers.find((m) => m.id === markerId);
+    if (!marker) return;
+    this._history.execute({
+      label: 'Delete marker',
+      execute: () => {
+        this._project.markers = this._project.markers.filter((m) => m.id !== markerId);
+        this._pm.markDirty(); this._drawRuler(); this._renderMarkerLines();
+      },
+      undo: () => {
+        if (!this._project.markers) this._project.markers = [];
+        this._project.markers.push(marker);
+        this._project.markers.sort((a, b) => a.time - b.time);
+        this._pm.markDirty(); this._drawRuler(); this._renderMarkerLines();
+      },
+    });
+  }
+
+  _showMarkerRenameInput(marker) {
+    const rulerScroll = this._el?.querySelector('#pm-tl-ruler-scroll');
+    if (!rulerScroll) return;
+    // Remove any existing rename input
+    rulerScroll.querySelector('.pm-tl-marker-rename')?.remove();
+
+    const mx = marker.time * this._pxPerSec - this._scrollLeft;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = marker.label ?? '';
+    input.className = 'pm-tl-marker-rename';
+    input.style.left = `${Math.max(0, mx + 10)}px`;
+    input.placeholder = 'Marker name';
+    input.maxLength = 40;
+    rulerScroll.appendChild(input);
+    input.focus();
+    input.select();
+
+    const commit = () => {
+      const newLabel = input.value.trim();
+      const oldLabel = marker.label ?? '';
+      input.remove();
+      if (newLabel === oldLabel) return;
+      this._history.execute({
+        label: 'Rename marker',
+        execute: () => { marker.label = newLabel; this._pm.markDirty(); this._drawRuler(); },
+        undo:    () => { marker.label = oldLabel;  this._pm.markDirty(); this._drawRuler(); },
+      });
+    };
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { input.remove(); }
+    });
+  }
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -1366,6 +1566,17 @@ function injectStyles() {
       background:var(--accent-blue,#8be9fd); pointer-events:none; opacity:0;
       transform:translateX(0); will-change:transform; z-index:18;
       transition:opacity 0.05s; }
+
+    /* Timeline marker vertical lines in lanes */
+    .pm-tl-marker-line { position:absolute; top:0; bottom:0; width:0;
+      border-left:1px dashed; pointer-events:none;
+      transform:translateX(0); will-change:transform; z-index:15;
+      opacity:0.55; }
+
+    /* Marker rename floating input on ruler */
+    .pm-tl-marker-rename { position:absolute; top:2px; height:20px; min-width:80px; max-width:160px;
+      background:#181820; border:1px solid #f1fa8c; color:#f1fa8c; border-radius:3px;
+      padding:0 4px; font-family:var(--font-mono); font-size:0.7rem; outline:none; z-index:50; }
 
     /* Mixer track header: 2-row column layout */
     .pm-tl-track-header--mix { flex-direction:column; align-items:stretch; justify-content:center; }

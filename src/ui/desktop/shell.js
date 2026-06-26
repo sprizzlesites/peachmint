@@ -1211,6 +1211,22 @@ class DesktopShell {
       if (ctrl && e.key === 'n') { e.preventDefault(); this._showNewProjectDialog(); }
       if (ctrl && e.key === 'o') { e.preventDefault(); this._showOpenProjectDialog(); }
 
+      // Marker navigation: Ctrl+Left / Ctrl+Right
+      if (ctrl && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const markers = this._pm.project?.markers ?? [];
+        const prev = [...markers].reverse().find((m) => m.time < this._currentTime - 0.01);
+        if (prev) { this._onSeek(prev.time); this._timeline?.seekTo(prev.time); }
+        return;
+      }
+      if (ctrl && e.key === 'ArrowRight') {
+        e.preventDefault();
+        const markers = this._pm.project?.markers ?? [];
+        const next = markers.find((m) => m.time > this._currentTime + 0.01);
+        if (next) { this._onSeek(next.time); this._timeline?.seekTo(next.time); }
+        return;
+      }
+
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
         const fps = this._pm.project?.canvas?.fps ?? 30;
@@ -1225,6 +1241,13 @@ class DesktopShell {
         const total = this._pm.project ? Math.max(totalDuration(this._pm.project), 10) : 60;
         const t = Math.min(total, this._currentTime + step);
         this._onSeek(t); this._timeline?.seekTo(t);
+      }
+
+      // Add marker at playhead (M key)
+      if (e.key === 'm' || e.key === 'M') {
+        if (!this._pm.project) return;
+        e.preventDefault();
+        this._timeline?.addMarker(this._currentTime);
       }
 
       // Delete selected clip
