@@ -33,6 +33,8 @@ export function createProject({ name = 'Untitled Project', width = 1920, height 
     tracks: [],
     assets: [],
     markers: [],
+    inPoint:  null,
+    outPoint: null,
   };
 }
 

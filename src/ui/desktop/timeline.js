@@ -106,6 +106,42 @@ export class Timeline {
   setWaveformCache(cache) { this._waveformCache = cache; }
   setAudioEngine(engine)  { this._audioEngine = engine; }
 
+  /** Set in-point to `time` seconds. Creates an undoable history command. */
+  setInPoint(time) {
+    if (!this._project) return;
+    const old = this._project.inPoint;
+    this._history.execute({
+      label: 'Set in-point',
+      execute: () => { this._project.inPoint = time; this._pm.markDirty(); this._drawRuler(); },
+      undo:    () => { this._project.inPoint = old;  this._pm.markDirty(); this._drawRuler(); },
+    });
+  }
+
+  /** Set out-point to `time` seconds. Creates an undoable history command. */
+  setOutPoint(time) {
+    if (!this._project) return;
+    const old = this._project.outPoint;
+    this._history.execute({
+      label: 'Set out-point',
+      execute: () => { this._project.outPoint = time; this._pm.markDirty(); this._drawRuler(); },
+      undo:    () => { this._project.outPoint = old;  this._pm.markDirty(); this._drawRuler(); },
+    });
+  }
+
+  /** Remove both in-point and out-point. Creates an undoable history command. */
+  clearInOut() {
+    if (!this._project) return;
+    const oldIn = this._project.inPoint, oldOut = this._project.outPoint;
+    this._history.execute({
+      label: 'Clear in/out points',
+      execute: () => { this._project.inPoint = null; this._project.outPoint = null; this._pm.markDirty(); this._drawRuler(); },
+      undo:    () => { this._project.inPoint = oldIn; this._project.outPoint = oldOut; this._pm.markDirty(); this._drawRuler(); },
+    });
+  }
+
+  /** Redraw the ruler (call after external changes to project in/out points). */
+  refreshRuler() { this._drawRuler(); }
+
   /** Add a marker at `time` seconds. Called by shell on M key. */
   addMarker(time) {
     if (!this._project) return;
@@ -715,6 +751,39 @@ export class Timeline {
       }
     }
 
+    // I/O range fill + bracket handles
+    const inPt  = this._project?.inPoint  ?? null;
+    const outPt = this._project?.outPoint ?? null;
+    if (inPt != null || outPt != null) {
+      const dur    = totalDuration(this._project);
+      const rStart = inPt  ?? 0;
+      const rEnd   = outPt ?? Math.max(dur, 10);
+      const rx1 = Math.max(0, rStart * pps - scrollX);
+      const rx2 = Math.min(w, rEnd   * pps - scrollX);
+      if (rx2 > rx1) {
+        ctx.fillStyle = 'rgba(139,233,253,0.1)';
+        ctx.fillRect(rx1, 0, rx2 - rx1, h);
+      }
+      if (inPt != null) {
+        const ix = Math.round(inPt * pps - scrollX);
+        if (ix >= -6 && ix <= w + 2) {
+          ctx.fillStyle = '#8be9fd';
+          ctx.fillRect(ix,     h - 10, 2, 10); // vertical bar
+          ctx.fillRect(ix,     h - 10, 6, 2);  // top arm →
+          ctx.fillRect(ix,     h - 1,  6, 1);  // bottom arm →
+        }
+      }
+      if (outPt != null) {
+        const ox = Math.round(outPt * pps - scrollX);
+        if (ox >= -2 && ox <= w + 6) {
+          ctx.fillStyle = '#bd93f9';
+          ctx.fillRect(ox - 2, h - 10, 2, 10); // vertical bar
+          ctx.fillRect(ox - 6, h - 10, 6, 2);  // top arm ←
+          ctx.fillRect(ox - 6, h - 1,  6, 1);  // bottom arm ←
+        }
+      }
+    }
+
     // Bottom border
     ctx.strokeStyle = '#2d2d3e';
     ctx.lineWidth = 1;
@@ -743,6 +812,13 @@ export class Timeline {
   _onRulerPointerDown(e) {
     if (e.button !== 0) return;
     e.preventDefault();
+    const io = this._ioAtRulerX(e);
+    if (io) {
+      this._rulerCanvas.setPointerCapture(e.pointerId);
+      const origTime = io === 'in' ? (this._project.inPoint ?? 0) : (this._project.outPoint ?? 0);
+      this._drag = { type: io === 'in' ? 'inpoint' : 'outpoint', origTime, pointerId: e.pointerId };
+      return;
+    }
     const m = this._markerAtRulerX(e);
     if (m) {
       this._rulerCanvas.setPointerCapture(e.pointerId);
@@ -875,6 +951,19 @@ export class Timeline {
 
     if (this._drag.type === 'playhead') {
       this._seekFromRulerEvent(e);
+      return;
+    }
+
+    if (this._drag.type === 'inpoint' || this._drag.type === 'outpoint') {
+      const isIn  = this._drag.type === 'inpoint';
+      const rect  = this._rulerCanvas.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const newTime = Math.max(0, (canvasX + this._scrollLeft) / this._pxPerSec);
+      if (this._project) {
+        if (isIn) this._project.inPoint  = newTime;
+        else      this._project.outPoint = newTime;
+        this._drawRuler();
+      }
       return;
     }
 
@@ -1053,6 +1142,20 @@ export class Timeline {
           });
           this._render();
         }
+      }
+    }
+
+    if (this._drag.type === 'inpoint' || this._drag.type === 'outpoint') {
+      const isIn    = this._drag.type === 'inpoint';
+      const prop    = isIn ? 'inPoint' : 'outPoint';
+      const newTime = this._project?.[prop] ?? null;
+      const origTime = this._drag.origTime;
+      if (this._project && newTime != null && Math.abs(newTime - origTime) > 0.001) {
+        this._history.execute({
+          label:   isIn ? 'Move in-point' : 'Move out-point',
+          execute: () => { this._project[prop] = newTime;  this._pm.markDirty(); this._drawRuler(); },
+          undo:    () => { this._project[prop] = origTime; this._pm.markDirty(); this._drawRuler(); },
+        });
       }
     }
 
@@ -1344,6 +1447,20 @@ export class Timeline {
     const timeAtX  = (canvasX + this._scrollLeft) / this._pxPerSec;
     const threshSec = 8 / this._pxPerSec;
     return (this._project?.markers ?? []).find((m) => Math.abs(m.time - timeAtX) < threshSec) ?? null;
+  }
+
+  _ioAtRulerX(e) {
+    if (!this._project) return null;
+    const rect = this._rulerCanvas.getBoundingClientRect();
+    const canvasX = e.clientX - rect.left;
+    const rulerY  = e.clientY - rect.top;
+    if (rulerY < RULER_H / 2) return null; // bottom half only (bracket zone)
+    const timeAtX   = (canvasX + this._scrollLeft) / this._pxPerSec;
+    const threshSec = 8 / this._pxPerSec;
+    const { inPoint, outPoint } = this._project;
+    if (inPoint  != null && Math.abs(timeAtX - inPoint)  < threshSec) return 'in';
+    if (outPoint != null && Math.abs(timeAtX - outPoint) < threshSec) return 'out';
+    return null;
   }
 
   _renderMarkerLines() {

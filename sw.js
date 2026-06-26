@@ -3,7 +3,7 @@
 // Also patches same-origin responses with COOP/COEP headers so that
 // crossOriginIsolated = true, enabling SharedArrayBuffer for ffmpeg.wasm.
 
-const CACHE_NAME = 'peachmint-v23';
+const CACHE_NAME = 'peachmint-v24';
 const APP_SHELL = [
   '/',
   '/index.html',

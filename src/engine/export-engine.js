@@ -163,7 +163,9 @@ export class ExportEngine {
       segEngine = new SegmentationEngine();
     }
 
-    const duration      = Math.max(totalDuration(project), 0.01);
+    const exportStart   = settings.startTime ?? 0;
+    const exportEnd     = settings.endTime   ?? Math.max(totalDuration(project), 0.01);
+    const duration      = Math.max(exportEnd - exportStart, 0.01);
     const frameDuration = 1 / fps;
     const totalFrames   = Math.ceil(duration * fps);
     const KEY_INTERVAL  = fps * 2;
@@ -174,12 +176,12 @@ export class ExportEngine {
         if (this._aborted) throw new Error('Export cancelled');
         if (videoError)    throw videoError;
 
-        const time = i * frameDuration;
+        const time = exportStart + i * frameDuration;
         await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine, drawRenderer);
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
-          timestamp: Math.round(time * 1_000_000),
+          timestamp: Math.round(i * frameDuration * 1_000_000),
           duration:  Math.round(frameDuration * 1_000_000),
         });
         bitmap.close();
@@ -196,7 +198,7 @@ export class ExportEngine {
       if (audioEncoder) {
         await this._encodeAudio(project, audioEncoder, duration, (p) => {
           onProgress(videoWeight + p * (1 - videoWeight));
-        });
+        }, exportStart);
         await audioEncoder.flush();
       }
 
@@ -277,7 +279,9 @@ export class ExportEngine {
       segEngine = new SegmentationEngine();
     }
 
-    const duration    = Math.max(totalDuration(project), 0.01);
+    const gifStart    = settings.startTime ?? 0;
+    const gifEnd      = settings.endTime   ?? Math.max(totalDuration(project), 0.01);
+    const duration    = Math.max(gifEnd - gifStart, 0.01);
     const frameDur    = 1 / gifFps;
     const totalFrames = Math.ceil(duration * gifFps);
     const gifDelay    = Math.round(frameDur * 100); // in centiseconds (gifenc unit)
@@ -286,7 +290,7 @@ export class ExportEngine {
     try {
       for (let i = 0; i < totalFrames; i++) {
         if (this._aborted) throw new Error('Export cancelled');
-        const time = i * frameDur;
+        const time = gifStart + i * frameDur;
         await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer, false, segEngine, drawRenderer);
         const pixels  = compositor.getPixels();
         if (pixels) {
@@ -471,18 +475,21 @@ export class ExportEngine {
 
   // ─── Audio rendering + encoding ───────────────────────────────────────────────
 
-  async _encodeAudio(project, audioEncoder, totalSecs, onProgress) {
+  async _encodeAudio(project, audioEncoder, totalSecs, onProgress, exportStart = 0) {
     const sampleRate = 44100;
     const channels   = 2;
     const length     = Math.ceil(sampleRate * totalSecs);
+    const exportEnd  = exportStart + totalSecs;
 
-    // Offline render of the full audio mix
     const offCtx = new OfflineAudioContext(channels, length, sampleRate);
 
     for (const track of project.tracks) {
       if (track.muted || track.type !== 'audio') continue;
       for (const clip of track.clips) {
         if (this._aborted) return;
+        const clipEnd = clip.startTime + clip.duration;
+        if (clipEnd <= exportStart || clip.startTime >= exportEnd) continue;
+
         const asset = project.assets.find((a) => a.id === clip.assetId);
         if (!asset?.storageKey || asset.type !== 'audio') continue;
 
@@ -499,22 +506,29 @@ export class ExportEngine {
           const gain = offCtx.createGain();
           gain.gain.setValueAtTime(clip.properties?.volume ?? 1, 0);
 
-          // Basic volume keyframe support in offline context
           const kfs = clip.keyframes?.volume ?? [];
           for (const kf of kfs) {
+            const kfAt = kf.time - exportStart;
+            if (kfAt < 0) continue;
             if (kf.easing === 'hold') {
-              gain.gain.setValueAtTime(kf.value, kf.time);
+              gain.gain.setValueAtTime(kf.value, kfAt);
             } else {
-              gain.gain.linearRampToValueAtTime(kf.value, kf.time);
+              gain.gain.linearRampToValueAtTime(kf.value, kfAt);
             }
           }
 
           src.connect(gain);
           gain.connect(offCtx.destination);
 
-          const trimIn = clip.trimIn ?? 0;
-          const srcDur = clip.duration * (clip.speed ?? 1);
-          src.start(clip.startTime, trimIn, srcDur);
+          const speed      = clip.speed ?? 1;
+          const trimIn     = clip.trimIn ?? 0;
+          const scheduleAt = Math.max(0, clip.startTime - exportStart);
+          const trimOffset = clip.startTime < exportStart
+            ? (exportStart - clip.startTime) * speed : 0;
+          const srcStart   = trimIn + trimOffset;
+          const srcDur     = (Math.min(clipEnd, exportEnd) - Math.max(clip.startTime, exportStart)) * speed;
+
+          src.start(scheduleAt, srcStart, srcDur);
         } catch {}
       }
     }

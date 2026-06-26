@@ -871,6 +871,14 @@ class DesktopShell {
         </label>
       </div>
 
+      <div id="ex-range-row" style="display:none;margin-top:10px;padding:8px 10px;background:var(--bg-base);border-radius:var(--radius);border:1px solid var(--border)">
+        <label style="display:flex;flex-direction:row;align-items:center;gap:8px;cursor:pointer;font-size:0.8rem">
+          <input type="checkbox" id="ex-use-range">
+          Export in/out range only
+          <span id="ex-range-label" style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted)"></span>
+        </label>
+      </div>
+
       <div id="ex-ffmpeg-row" style="display:none;margin-top:10px;padding:10px 12px;background:var(--bg-base);border-radius:var(--radius);border:1px solid var(--border);font-size:0.8rem">
         <div id="ex-ffmpeg-required" style="display:none;color:var(--accent-warn)">
           ⚠ WebCodecs encode unavailable on this browser. Using ffmpeg.wasm (~50 MB download, slower).
@@ -918,13 +926,25 @@ class DesktopShell {
 
     const EXT_LABELS = { mp4: 'Export MP4', webm: 'Export WebM', gif: 'Export GIF', png: 'Export PNG' };
 
+    const rangeRow   = dialog.querySelector('#ex-range-row');
+    const rangeLabel = dialog.querySelector('#ex-range-label');
+    const rangeCb    = dialog.querySelector('#ex-use-range');
+    const hasIO = project.inPoint != null || project.outPoint != null;
+    if (rangeCb) rangeCb.checked = hasIO;
+    if (rangeLabel && hasIO) {
+      const inStr  = project.inPoint  != null ? project.inPoint.toFixed(2)  + 's' : '0s';
+      const outStr = project.outPoint != null ? project.outPoint.toFixed(2) + 's' : 'end';
+      rangeLabel.textContent = `(${inStr} → ${outStr})`;
+    }
+
     const updateForFormat = () => {
       const fmt = fmtSel.value;
       const isVideoFmt = fmt === 'mp4' || fmt === 'webm';
-      videoOpts.style.display = isVideoFmt ? '' : 'none';
-      gifOpts.style.display   = fmt === 'gif'  ? '' : 'none';
-      pngOpts.style.display   = fmt === 'png'  ? '' : 'none';
-      audioRow.style.display  = fmt === 'mp4'  ? '' : 'none';
+      videoOpts.style.display  = isVideoFmt ? '' : 'none';
+      gifOpts.style.display    = fmt === 'gif'  ? '' : 'none';
+      pngOpts.style.display    = fmt === 'png'  ? '' : 'none';
+      audioRow.style.display   = fmt === 'mp4'  ? '' : 'none';
+      if (rangeRow) rangeRow.style.display = fmt !== 'png' ? '' : 'none';
       startBtn.textContent    = EXT_LABELS[fmt] ?? 'Export';
 
       // Show ffmpeg.wasm row only for video formats when SAB is available
@@ -988,6 +1008,12 @@ class DesktopShell {
           transparent: transp, pngTime,
           gifFps,
         };
+
+        const useRange = dialog.querySelector('#ex-use-range')?.checked ?? false;
+        if (useRange && fmt !== 'png') {
+          if (project.inPoint  != null) settings.startTime = project.inPoint;
+          if (project.outPoint != null) settings.endTime   = project.outPoint;
+        }
 
         const result = await exportEngine.export(project, settings, (progress) => {
           pbar.style.width = `${Math.round(progress * 100)}%`;
@@ -1248,6 +1274,40 @@ class DesktopShell {
         if (!this._pm.project) return;
         e.preventDefault();
         this._timeline?.addMarker(this._currentTime);
+      }
+
+      // In-point: I to set, Shift+I to clear
+      if ((e.key === 'i' || e.key === 'I') && !ctrl) {
+        if (!this._pm.project) return;
+        e.preventDefault();
+        if (e.shiftKey) {
+          const proj = this._pm.project, old = proj.inPoint;
+          this._history.execute({
+            label:   'Clear in-point',
+            execute: () => { proj.inPoint = null; this._pm.markDirty(); this._timeline?.refreshRuler(); },
+            undo:    () => { proj.inPoint = old;  this._pm.markDirty(); this._timeline?.refreshRuler(); },
+          });
+        } else {
+          this._timeline?.setInPoint(this._currentTime);
+        }
+        return;
+      }
+
+      // Out-point: O to set, Shift+O to clear
+      if ((e.key === 'o' || e.key === 'O') && !ctrl) {
+        if (!this._pm.project) return;
+        e.preventDefault();
+        if (e.shiftKey) {
+          const proj = this._pm.project, old = proj.outPoint;
+          this._history.execute({
+            label:   'Clear out-point',
+            execute: () => { proj.outPoint = null; this._pm.markDirty(); this._timeline?.refreshRuler(); },
+            undo:    () => { proj.outPoint = old;  this._pm.markDirty(); this._timeline?.refreshRuler(); },
+          });
+        } else {
+          this._timeline?.setOutPoint(this._currentTime);
+        }
+        return;
       }
 
       // Delete selected clip

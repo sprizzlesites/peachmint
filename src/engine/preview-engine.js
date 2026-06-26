@@ -168,14 +168,15 @@ export class PreviewEngine extends EventTarget {
 
     const elapsed = (performance.now() - this._playStartWall) / 1000;
     const t       = this._playStartTime + elapsed;
-    const total   = this._totalDuration();
+    const outPt   = this._project?.outPoint ?? null;
+    const total   = outPt != null ? Math.min(outPt, this._totalDuration()) : this._totalDuration();
 
     if (t >= total) {
       this._playing     = false;
-      this._currentTime = 0;
+      this._currentTime = outPt != null ? outPt : 0;
       this._rafId       = null;
       this.dispatchEvent(new CustomEvent('preview:ended'));
-      this._renderFrame(0).catch(() => {});
+      this._renderFrame(this._currentTime).catch(() => {});
       return;
     }
 
