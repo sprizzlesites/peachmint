@@ -69,6 +69,8 @@ export class Timeline {
     this._playheadRulerEl = null;
 
     this._mounted = false;
+    this._selectedClipIds = new Set();
+    this._waveformCache   = null;
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -94,6 +96,39 @@ export class Timeline {
   zoomIn()  { this._setZoom(this._pxPerSec * 1.5); }
   zoomOut() { this._setZoom(this._pxPerSec / 1.5); }
 
+  setWaveformCache(cache) { this._waveformCache = cache; }
+
+  // Align each Ctrl-selected clip so its loudest audio peak lands at the
+  // same absolute project time as the first selected clip's peak.
+  syncSelectedClips() {
+    if (!this._project || !this._waveformCache || this._selectedClipIds.size < 2) return false;
+    const entries = [];
+    for (const clipId of this._selectedClipIds) {
+      const clip = this._findClip(clipId);
+      if (!clip?.assetId) continue;
+      const asset = this._project.assets.find((a) => a.id === clip.assetId);
+      if (!asset?.storageKey || !asset.duration) continue;
+      if (asset.type !== 'video' && asset.type !== 'audio') continue;
+      const ft = this._waveformCache.peakFileTime(asset.storageKey, asset.duration);
+      if (ft === null) continue;
+      const localT = Math.max(0, Math.min(clip.duration,
+        (ft - (clip.trimIn ?? 0)) / (clip.speed ?? 1)));
+      entries.push({ clip, localT, oldStart: clip.startTime });
+    }
+    if (entries.length < 2) return false;
+    const anchorAbsT = entries[0].clip.startTime + entries[0].localT;
+    const moves = entries.slice(1)
+      .map((e) => ({ clip: e.clip, oldStart: e.oldStart, newStart: Math.max(0, anchorAbsT - e.localT) }))
+      .filter((m) => Math.abs(m.newStart - m.oldStart) > 0.001);
+    if (!moves.length) return false;
+    this._history.execute({
+      label:   'Sync clips by audio peak',
+      execute: () => { moves.forEach((m) => { m.clip.startTime = m.newStart; }); this._pm.markDirty(); this._render(); },
+      undo:    () => { moves.forEach((m) => { m.clip.startTime = m.oldStart;  }); this._pm.markDirty(); this._render(); },
+    });
+    return true;
+  }
+
   // ─── Mount ──────────────────────────────────────────────────────────────────
 
   _mount() {
@@ -108,6 +143,8 @@ export class Timeline {
             <button class="pm-tl-zoom-btn" id="pm-tl-zi" title="Zoom in (+)">+</button>
             <span class="pm-tl-zoom-val" id="pm-tl-zv">100%</span>
             <button class="pm-tl-zoom-btn" id="pm-tl-zo" title="Zoom out (-)">−</button>
+            <button class="pm-tl-sync-btn" id="pm-tl-sync" style="display:none" disabled
+                    title="Sync selected clips by audio peak — Ctrl+Shift+S">Sync</button>
           </div>
           <div class="pm-tl-ruler-scroll" id="pm-tl-ruler-scroll">
             <canvas class="pm-tl-ruler" id="pm-tl-ruler" height="${RULER_H}"></canvas>
@@ -166,6 +203,7 @@ export class Timeline {
     // Zoom buttons
     this._el.querySelector('#pm-tl-zi').addEventListener('click', () => this.zoomIn());
     this._el.querySelector('#pm-tl-zo').addEventListener('click', () => this.zoomOut());
+    this._el.querySelector('#pm-tl-sync').addEventListener('click', () => this.syncSelectedClips());
 
     // Wheel zoom (Ctrl + wheel)
     this._lanesScroll.addEventListener('wheel', (e) => {
@@ -363,10 +401,11 @@ export class Timeline {
     const col = TRACK_COLORS[track.type] ?? TRACK_COLORS.video;
     const left = clip.startTime * this._pxPerSec;
     const width = Math.max(clip.duration * this._pxPerSec, 4);
-    const isSelected = clip.id === this._selectedClipId;
+    const isSelected      = clip.id === this._selectedClipId;
+    const isMultiSelected = this._selectedClipIds.has(clip.id);
 
     const el = document.createElement('div');
-    el.className = `pm-tl-clip ${isSelected ? 'selected' : ''}`;
+    el.className = `pm-tl-clip${isSelected ? ' selected' : ''}${isMultiSelected ? ' multi-selected' : ''}`;
     el.dataset.clipId = clip.id;
     el.dataset.trackId = track.id;
     el.style.cssText = `left:${left}px; width:${width}px; height:${laneH - 4}px;
@@ -398,6 +437,47 @@ export class Timeline {
       <div class="pm-tl-clip-trim-l" data-resize="left" aria-hidden="true"></div>
       <div class="pm-tl-clip-trim-r" data-resize="right" aria-hidden="true"></div>
     `;
+
+    // Waveform canvas for audio / video clips (drawn below label via prepend)
+    if (this._waveformCache && clip.assetId) {
+      const asset = this._project?.assets.find((a) => a.id === clip.assetId);
+      if (asset?.storageKey && (asset.type === 'video' || asset.type === 'audio')) {
+        const wvCanvas = document.createElement('canvas');
+        wvCanvas.className = 'pm-tl-waveform';
+        wvCanvas.width  = Math.max(1, Math.ceil(width));
+        wvCanvas.height = Math.max(1, laneH - 4);
+        el.prepend(wvCanvas);
+
+        const paint = (peaks) => {
+          if (!peaks || !wvCanvas.isConnected) return;
+          const cw = wvCanvas.width, ch = wvCanvas.height;
+          const ctx2d = wvCanvas.getContext('2d');
+          ctx2d.clearRect(0, 0, cw, ch);
+          ctx2d.fillStyle = 'rgba(255,255,255,0.28)';
+          const N        = peaks.length;
+          const assetDur = asset.duration ?? 0;
+          const trimIn   = clip.trimIn ?? 0;
+          const speed    = clip.speed ?? 1;
+          const pStart   = assetDur > 0 ? Math.max(0, Math.round(trimIn / assetDur * N)) : 0;
+          const pEnd     = assetDur > 0 ? Math.min(N, Math.round((trimIn + clip.duration * speed) / assetDur * N)) : N;
+          const vis      = Math.max(1, pEnd - pStart);
+          const midY     = ch / 2;
+          for (let i = 0; i < vis; i++) {
+            const p  = peaks[Math.min(pStart + i, N - 1)] ?? 0;
+            const bh = Math.max(1, p * midY * 0.88);
+            ctx2d.fillRect((i / vis) * cw, midY - bh, Math.max(1, cw / vis - 0.5), bh * 2);
+          }
+        };
+
+        const cached = this._waveformCache.getCached(asset.storageKey);
+        if (cached) {
+          paint(cached);
+        } else {
+          this._waveformCache.get(asset.storageKey).then(paint).catch(() => {});
+        }
+      }
+    }
+
     return el;
   }
 
@@ -521,6 +601,14 @@ export class Timeline {
     if (clipEl && !resizeHandle) {
       const clipId  = clipEl.dataset.clipId;
       const trackId = clipEl.dataset.trackId;
+
+      // Ctrl/Meta+click → multi-select toggle, no drag
+      if ((e.ctrlKey || e.metaKey) && this._tool === 'pointer') {
+        e.preventDefault();
+        this._selectClip(clipId, trackId, true);
+        return;
+      }
+
       this._selectClip(clipId, trackId);
 
       // Razor tool: split clip at click position
@@ -743,10 +831,26 @@ export class Timeline {
 
   // ─── Clip / track selection ──────────────────────────────────────────────────
 
-  _selectClip(clipId, trackId) {
+  _selectClip(clipId, trackId, addToSelection = false) {
+    if (addToSelection) {
+      if (this._selectedClipIds.has(clipId)) {
+        this._selectedClipIds.delete(clipId);
+        this._el.querySelector(`.pm-tl-clip[data-clip-id="${clipId}"]`)?.classList.remove('multi-selected');
+      } else {
+        this._selectedClipIds.add(clipId);
+        this._el.querySelector(`.pm-tl-clip[data-clip-id="${clipId}"]`)?.classList.add('multi-selected');
+      }
+      this._updateSyncBtn();
+      return;
+    }
+
+    // Single select — clear any multi-selection
     this._selectedClipId = clipId;
-    // Update visual selection
-    this._el.querySelectorAll('.pm-tl-clip.selected').forEach((el) => el.classList.remove('selected'));
+    this._selectedClipIds.clear();
+    this._updateSyncBtn();
+    this._el.querySelectorAll('.pm-tl-clip.selected, .pm-tl-clip.multi-selected').forEach((el) => {
+      el.classList.remove('selected', 'multi-selected');
+    });
     this._el.querySelector(`.pm-tl-clip[data-clip-id="${clipId}"]`)?.classList.add('selected');
 
     const clip = this._findClip(clipId);
@@ -754,6 +858,14 @@ export class Timeline {
 
     const track = this._project?.tracks.find((t) => t.id === trackId);
     if (track) this._onTrackSelect(track);
+  }
+
+  _updateSyncBtn() {
+    const btn = this._el?.querySelector('#pm-tl-sync');
+    if (!btn) return;
+    const ok = this._selectedClipIds.size >= 2;
+    btn.disabled = !ok;
+    btn.style.display = ok ? '' : 'none';
   }
 
   // ─── Track header actions ────────────────────────────────────────────────────
@@ -1017,6 +1129,21 @@ function injectStyles() {
     /* Ghost clip element during cross-track drag */
     .pm-tl-clip-ghost { cursor:grabbing !important;
       box-shadow:0 4px 20px rgba(0,0,0,.6), 0 0 0 2px var(--accent-peach) !important; }
+
+    /* Multi-select highlight (Ctrl+click) */
+    .pm-tl-clip.multi-selected { box-shadow:0 0 0 2px var(--accent-purple); }
+    .pm-tl-clip.multi-selected.selected { box-shadow:0 0 0 2px #fff, 0 0 0 4px var(--accent-purple); }
+
+    /* Waveform canvas sits behind label/handles via DOM prepend + position:absolute */
+    .pm-tl-waveform { position:absolute; inset:0; width:100%; height:100%;
+      pointer-events:none; z-index:0; border-radius:inherit; }
+
+    /* Sync button in timeline corner — shown only when ≥2 clips are multi-selected */
+    .pm-tl-sync-btn { background:transparent; border:1px solid var(--accent-purple);
+      color:var(--accent-purple); font-size:0.6rem; padding:1px 5px; border-radius:4px;
+      cursor:pointer; font-family:var(--font-mono); white-space:nowrap; line-height:1.5; }
+    .pm-tl-sync-btn:hover:not(:disabled) { background:var(--accent-purple); color:#fff; }
+    .pm-tl-sync-btn:disabled { opacity:0.3; cursor:default; }
   `;
   document.head.appendChild(s);
 }

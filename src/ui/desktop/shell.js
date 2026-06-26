@@ -13,6 +13,7 @@ import { PreviewEngine } from '../../engine/preview-engine.js';
 import { AudioEngine }   from '../../engine/audio-engine.js';
 import { addTrack, removeClip, totalDuration, getDrawFrameIdx } from '../../engine/edl.js';
 import { DrawRenderer }  from '../../engine/draw-renderer.js';
+import { WaveformCache } from '../../engine/waveform.js';
 
 /** Called from app-shell.js to mount the desktop UI into `container`. */
 export function mountDesktopShell(container, { projectManager, historyManager, storage }) {
@@ -64,6 +65,9 @@ class DesktopShell {
     this._trackSourceClip    = null;
     this._trackingEscHandler = null;
     this._trackPickHandler   = null;
+
+    // Waveform analysis cache
+    this._waveformCache = null;
   }
 
   mount() {
@@ -123,6 +127,8 @@ class DesktopShell {
       onClipSelect: (clip) => this._onClipSelect(clip),
       onTrackSelect: (track) => this._inspector?.showTrack(track),
     });
+    this._waveformCache = new WaveformCache(this._storage);
+    this._timeline.setWaveformCache(this._waveformCache);
 
     this._inspector = new Inspector(this._el.querySelector('#pm-inspector'), {
       pm: this._pm, history: this._history,
@@ -1151,7 +1157,8 @@ class DesktopShell {
       if (e.code === 'Space') { e.preventDefault(); this._togglePlay(); }
       if (ctrl && e.key === 'z') { e.preventDefault(); this._history.undo(); }
       if (ctrl && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); this._history.redo(); }
-      if (ctrl && e.key === 's') { e.preventDefault(); this._pm.saveProject(); }
+      if (ctrl && !e.shiftKey && e.key === 's') { e.preventDefault(); this._pm.saveProject(); }
+      if (ctrl && e.shiftKey && e.key === 'S') { e.preventDefault(); this._timeline?.syncSelectedClips(); }
       if (ctrl && e.key === 'n') { e.preventDefault(); this._showNewProjectDialog(); }
       if (ctrl && e.key === 'o') { e.preventDefault(); this._showOpenProjectDialog(); }
 
