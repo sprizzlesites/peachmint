@@ -387,38 +387,71 @@ class DesktopShell {
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-labelledby', 'ex-title');
     dialog.innerHTML = `
-      <h2 id="ex-title" style="margin:0 0 16px;font-size:1rem">Export Video</h2>
+      <h2 id="ex-title" style="margin:0 0 16px;font-size:1rem">Export</h2>
 
-      <label class="pm-dlg-label">Resolution
-        <select id="ex-res" class="pm-input" style="width:100%">
-          <option value="match">Match project — ${w}×${h}</option>
-          <option value="1920x1080">1920×1080 (1080p)</option>
-          <option value="3840x2160">3840×2160 (4K)</option>
-          <option value="1280x720">1280×720 (720p)</option>
+      <label class="pm-dlg-label">Format
+        <select id="ex-fmt" class="pm-input" style="width:100%">
+          <option value="mp4"  selected>MP4 (H.264 + AAC)</option>
+          <option value="webm">WebM (VP9, video only)</option>
+          <option value="gif">Animated GIF</option>
+          <option value="png">PNG frame (still)</option>
         </select>
       </label>
 
-      <label class="pm-dlg-label" style="margin-top:10px">Frame Rate
-        <select id="ex-fps" class="pm-input" style="width:100%">
-          <option value="match">Match project — ${f} fps</option>
-          <option value="24">24 fps (cinematic)</option>
-          <option value="30">30 fps</option>
-          <option value="60">60 fps</option>
-        </select>
-      </label>
+      <div id="ex-video-opts">
+        <label class="pm-dlg-label" style="margin-top:10px">Resolution
+          <select id="ex-res" class="pm-input" style="width:100%">
+            <option value="match">Match project — ${w}×${h}</option>
+            <option value="1920x1080">1920×1080 (1080p)</option>
+            <option value="3840x2160">3840×2160 (4K)</option>
+            <option value="1280x720">1280×720 (720p)</option>
+          </select>
+        </label>
 
-      <label class="pm-dlg-label" style="margin-top:10px">Video Quality
-        <select id="ex-vbr" class="pm-input" style="width:100%">
-          <option value="4000000">4 Mbps — web / social</option>
-          <option value="8000000" selected>8 Mbps — standard</option>
-          <option value="16000000">16 Mbps — high</option>
-          <option value="32000000">32 Mbps — ultra</option>
-        </select>
-      </label>
+        <label class="pm-dlg-label" style="margin-top:10px">Frame Rate
+          <select id="ex-fps" class="pm-input" style="width:100%">
+            <option value="match">Match project — ${f} fps</option>
+            <option value="24">24 fps (cinematic)</option>
+            <option value="30">30 fps</option>
+            <option value="60">60 fps</option>
+          </select>
+        </label>
 
-      <label class="pm-dlg-label" style="margin-top:10px;flex-direction:row;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="ex-audio" checked> Include audio tracks
-      </label>
+        <label class="pm-dlg-label" style="margin-top:10px">Video Quality
+          <select id="ex-vbr" class="pm-input" style="width:100%">
+            <option value="4000000">4 Mbps — web / social</option>
+            <option value="8000000" selected>8 Mbps — standard</option>
+            <option value="16000000">16 Mbps — high</option>
+            <option value="32000000">32 Mbps — ultra</option>
+          </select>
+        </label>
+
+        <label id="ex-audio-row" class="pm-dlg-label" style="margin-top:10px;flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ex-audio" checked> Include audio tracks
+        </label>
+      </div>
+
+      <div id="ex-gif-opts" style="display:none">
+        <label class="pm-dlg-label" style="margin-top:10px">GIF Frame Rate
+          <select id="ex-gif-fps" class="pm-input" style="width:100%">
+            <option value="8">8 fps</option>
+            <option value="10" selected>10 fps</option>
+            <option value="15">15 fps</option>
+            <option value="20">20 fps</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="ex-png-opts" style="display:none">
+        <label class="pm-dlg-label" style="margin-top:10px">Export frame at (seconds)
+          <input type="number" id="ex-png-time" class="pm-input" style="width:100%"
+                 value="${this._currentTime.toFixed(2)}" min="0" step="0.01"
+                 placeholder="0.00">
+        </label>
+        <label class="pm-dlg-label" style="margin-top:10px;flex-direction:row;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="ex-transparent"> Transparent background (PNG alpha)
+        </label>
+      </div>
 
       <div id="ex-progress-wrap" style="display:none;margin-top:16px">
         <div style="background:var(--bg-base);border-radius:6px;overflow:hidden;height:6px">
@@ -438,23 +471,43 @@ class DesktopShell {
     dialog.showModal();
 
     let exportEngine = null;
-    const startBtn    = dialog.querySelector('#ex-start');
-    const cancelBtn   = dialog.querySelector('#ex-cancel');
+    const startBtn     = dialog.querySelector('#ex-start');
+    const cancelBtn    = dialog.querySelector('#ex-cancel');
     const progressWrap = dialog.querySelector('#ex-progress-wrap');
-    const pbar        = dialog.querySelector('#ex-pbar');
-    const plabel      = dialog.querySelector('#ex-plabel');
-    const errorBox    = dialog.querySelector('#ex-error');
+    const pbar         = dialog.querySelector('#ex-pbar');
+    const plabel       = dialog.querySelector('#ex-plabel');
+    const errorBox     = dialog.querySelector('#ex-error');
+    const fmtSel       = dialog.querySelector('#ex-fmt');
+    const videoOpts    = dialog.querySelector('#ex-video-opts');
+    const gifOpts      = dialog.querySelector('#ex-gif-opts');
+    const pngOpts      = dialog.querySelector('#ex-png-opts');
+    const audioRow     = dialog.querySelector('#ex-audio-row');
+
+    const EXT_LABELS = { mp4: 'Export MP4', webm: 'Export WebM', gif: 'Export GIF', png: 'Export PNG' };
+
+    const updateForFormat = () => {
+      const fmt = fmtSel.value;
+      videoOpts.style.display = (fmt === 'mp4' || fmt === 'webm') ? '' : 'none';
+      gifOpts.style.display   = fmt === 'gif'  ? '' : 'none';
+      pngOpts.style.display   = fmt === 'png'  ? '' : 'none';
+      audioRow.style.display  = fmt === 'mp4'  ? '' : 'none';
+      startBtn.textContent    = EXT_LABELS[fmt] ?? 'Export';
+    };
+    fmtSel.addEventListener('change', updateForFormat);
 
     const closeDialog = () => { dialog.close(); dialog.remove(); };
 
     cancelBtn.addEventListener('click', () => { exportEngine?.abort(); closeDialog(); });
 
     startBtn.addEventListener('click', async () => {
-      // Parse settings
-      const resVal  = dialog.querySelector('#ex-res').value;
-      const fpsVal  = dialog.querySelector('#ex-fps').value;
-      const vbrVal  = parseInt(dialog.querySelector('#ex-vbr').value, 10);
-      const inclAud = dialog.querySelector('#ex-audio').checked;
+      const fmt     = fmtSel.value;
+      const resVal  = dialog.querySelector('#ex-res')?.value ?? 'match';
+      const fpsVal  = dialog.querySelector('#ex-fps')?.value ?? 'match';
+      const vbrVal  = parseInt(dialog.querySelector('#ex-vbr')?.value ?? '8000000', 10);
+      const inclAud = dialog.querySelector('#ex-audio')?.checked ?? true;
+      const gifFps  = parseInt(dialog.querySelector('#ex-gif-fps')?.value ?? '10', 10);
+      const pngTime = parseFloat(dialog.querySelector('#ex-png-time')?.value ?? '0') || 0;
+      const transp  = dialog.querySelector('#ex-transparent')?.checked ?? false;
 
       let width = w, height = h;
       if (resVal !== 'match') [width, height] = resVal.split('x').map(Number);
@@ -464,29 +517,35 @@ class DesktopShell {
       startBtn.textContent = 'Exporting…';
       progressWrap.style.display = 'block';
       errorBox.style.display = 'none';
+      pbar.style.width = '0%';
 
       const t0 = Date.now();
       try {
         const { ExportEngine } = await import('../../engine/export-engine.js');
         exportEngine = new ExportEngine({ storage: this._storage });
 
-        const buffer = await exportEngine.export(
-          project,
-          { width, height, fps, videoBitrate: vbrVal, includeAudio: inclAud },
-          (progress) => {
-            pbar.style.width = `${Math.round(progress * 100)}%`;
-            const elapsed = (Date.now() - t0) / 1000;
-            const eta     = progress > 0.05 ? (elapsed / progress - elapsed) : null;
-            plabel.textContent = `${Math.round(progress * 100)}% — ${formatElapsed(elapsed)}${eta ? ` · ~${formatElapsed(eta)} remaining` : ''}`;
-          },
-        );
+        const settings = {
+          format: fmt, width, height, fps,
+          videoBitrate: vbrVal, includeAudio: inclAud,
+          transparent: transp, pngTime,
+          gifFps,
+        };
 
-        // Download the resulting MP4
-        const blob = new Blob([buffer], { type: 'video/mp4' });
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement('a');
+        const result = await exportEngine.export(project, settings, (progress) => {
+          pbar.style.width = `${Math.round(progress * 100)}%`;
+          const elapsed = (Date.now() - t0) / 1000;
+          const eta     = progress > 0.05 ? (elapsed / progress - elapsed) : null;
+          plabel.textContent = `${Math.round(progress * 100)}% — ${formatElapsed(elapsed)}${eta ? ` · ~${formatElapsed(eta)} remaining` : ''}`;
+        });
+
+        // Download result
+        const mimeMap = { mp4: 'video/mp4', webm: 'video/webm', gif: 'image/gif', png: 'image/png' };
+        const mime    = mimeMap[fmt] ?? 'application/octet-stream';
+        const blob    = result instanceof Blob ? result : new Blob([result], { type: mime });
+        const url     = URL.createObjectURL(blob);
+        const a       = document.createElement('a');
         a.href = url;
-        a.download = `${(project.name ?? 'export').replace(/[^a-z0-9_-]/gi, '_')}.mp4`;
+        a.download = `${(project.name ?? 'export').replace(/[^a-z0-9_-]/gi, '_')}.${fmt}`;
         a.click();
         URL.revokeObjectURL(url);
         closeDialog();
@@ -496,7 +555,7 @@ class DesktopShell {
         errorBox.textContent = `Export failed: ${err.message}`;
         errorBox.style.display = 'block';
         startBtn.disabled = false;
-        startBtn.textContent = 'Retry Export';
+        startBtn.textContent = EXT_LABELS[fmt] ?? 'Export';
       }
     });
 

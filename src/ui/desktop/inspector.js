@@ -64,7 +64,13 @@ export class Inspector {
         ${row('Duration', formatSec(clip.duration))}
         ${row('Trim In',  formatSec(clip.trimIn))}
         ${row('Trim Out', clip.trimOut != null ? formatSec(clip.trimOut) : '— (end)')}
-        ${row('Speed',    `${clip.speed}×`)}
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label">Speed</span>
+          <input type="number" class="pm-insp-num pm-speed-input" id="pm-speed-input"
+                 value="${clip.speed ?? 1}" min="0.1" max="10" step="0.05"
+                 aria-label="Playback speed multiplier">
+          <span style="margin-left:4px;color:var(--text-muted);font-size:0.8rem">×</span>
+        </div>
       </div>
 
       ${asset ? `
@@ -274,6 +280,10 @@ export class Inspector {
     // Wire preset controls
     this._el.querySelector('#pm-insp-preset-save')?.addEventListener('click', () => this._onPresetSave());
     this._el.querySelector('#pm-insp-preset-load')?.addEventListener('click', () => this._onPresetLoad());
+
+    // Wire speed input
+    const speedInputEl = this._el.querySelector('#pm-speed-input');
+    speedInputEl?.addEventListener('change', () => this._onSpeedChange(parseFloat(speedInputEl.value)));
 
     // Wire text controls
     const textContentEl = this._el.querySelector('.pm-text-content');
@@ -485,6 +495,18 @@ export class Inspector {
       }
     }, { once: true });
     input.click();
+  }
+
+  _onSpeedChange(value) {
+    const clip = this._currentClip;
+    if (!clip || !this._pm.project || isNaN(value)) return;
+    const clamped = Math.max(0.1, Math.min(10, value));
+    const old = clip.speed ?? 1;
+    this._history.execute({
+      label: 'Set clip speed',
+      execute: () => { clip.speed = clamped; this._pm.markDirty(); },
+      undo:    () => { clip.speed = old;     this._pm.markDirty(); },
+    });
   }
 
   _onTextPropChange(key, value) {

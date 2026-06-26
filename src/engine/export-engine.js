@@ -18,7 +18,9 @@ import { clipsAtTime, totalDuration, transitionClipsAtTime, getTransitionOutFact
 import { parseCube, parse3dl }     from './lut.js';
 import { TextRenderer }              from './text-renderer.js';
 
-const MP4_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
+const MP4_MUXER_CDN  = 'https://cdn.jsdelivr.net/npm/mp4-muxer@4.4.5/+esm';
+const WEBM_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/webm-muxer@3.2.0/+esm';
+const GIFENC_CDN     = 'https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm';
 
 export class ExportEngine {
   /** @param {{ storage: import('./storage.js').StorageLayer }} opts */
@@ -53,14 +55,22 @@ export class ExportEngine {
   // ─── Main export ─────────────────────────────────────────────────────────────
 
   /**
-   * Render and encode the project to an MP4 ArrayBuffer.
+   * Render and encode the project. Format is determined by settings.format
+   * ('mp4' default, 'webm', 'gif', 'png').
    *
    * @param {object}   project
-   * @param {{ width, height, fps, videoBitrate, audioBitrate, includeAudio }} settings
+   * @param {{ format, width, height, fps, videoBitrate, audioBitrate, includeAudio, transparent, pngTime, gifFps }} settings
    * @param {(progress: number) => void} onProgress — 0 → 1
-   * @returns {Promise<ArrayBuffer>}
+   * @returns {Promise<ArrayBuffer|Uint8Array|Blob>}
    */
   async export(project, settings, onProgress = () => {}) {
+    const format = (settings.format ?? 'mp4').toLowerCase();
+    if (format === 'png') return this._exportPNG(project, settings);
+    if (format === 'gif') return this._exportGIF(project, settings, onProgress);
+    return this._exportVideo(project, settings, onProgress, format === 'webm');
+  }
+
+  async _exportVideo(project, settings, onProgress = () => {}, isWebM = false) {
     this._aborted = false;
 
     const {
@@ -72,7 +82,6 @@ export class ExportEngine {
       includeAudio = true,
     } = settings;
 
-    // ── Feature detection ───────────────────────────────────────────────────
     if (typeof VideoEncoder === 'undefined') {
       throw new Error('WebCodecs VideoEncoder is not available in this browser. Try Chrome 94+ or Edge 94+.');
     }
@@ -80,42 +89,47 @@ export class ExportEngine {
       throw new Error('OffscreenCanvas is not available in this browser.');
     }
 
-    // ── Load mp4-muxer (lazy CDN import — only during export) ───────────────
-    const { Muxer, ArrayBufferTarget } = await import(MP4_MUXER_CDN);
-    if (this._aborted) throw new Error('Export cancelled');
-
-    // ── Decide whether to include audio ─────────────────────────────────────
-    const hasAudioTracks = includeAudio &&
+    const hasAudioTracks = !isWebM && includeAudio &&
       project.tracks.some((t) => t.type === 'audio' && !t.muted && t.clips.length > 0);
 
-    // ── Set up muxer ────────────────────────────────────────────────────────
-    const target     = new ArrayBufferTarget();
-    const muxerOpts  = {
-      target,
-      video:     { codec: 'avc', width, height },
-      fastStart: 'in-memory', // puts moov at file start; fine for up to ~8 GB in RAM
-    };
-    if (hasAudioTracks) {
-      muxerOpts.audio = { codec: 'aac', numberOfChannels: 2, sampleRate: 44100 };
+    // Load muxer (lazy CDN import — only during export)
+    let muxer, target;
+    if (isWebM) {
+      const { Muxer, ArrayBufferTarget } = await import(WEBM_MUXER_CDN);
+      if (this._aborted) throw new Error('Export cancelled');
+      target = new ArrayBufferTarget();
+      muxer  = new Muxer({ target, video: { codec: 'V_VP9', width, height } });
+    } else {
+      const { Muxer, ArrayBufferTarget } = await import(MP4_MUXER_CDN);
+      if (this._aborted) throw new Error('Export cancelled');
+      target = new ArrayBufferTarget();
+      const muxerOpts = {
+        target,
+        video:     { codec: 'avc', width, height },
+        fastStart: 'in-memory',
+      };
+      if (hasAudioTracks) {
+        muxerOpts.audio = { codec: 'aac', numberOfChannels: 2, sampleRate: 44100 };
+      }
+      muxer = new Muxer(muxerOpts);
     }
-    const muxer = new Muxer(muxerOpts);
 
-    // ── Set up VideoEncoder ─────────────────────────────────────────────────
+    // Set up VideoEncoder
     let videoError = null;
     const videoEncoder = new VideoEncoder({
       output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
       error:  (e) => { videoError = e; },
     });
     await videoEncoder.configure({
-      codec:     'avc1.4d0028',  // H.264 Main Level 4.0
+      codec:     isWebM ? 'vp09.00.10.08' : 'avc1.4d0028',
       width,
       height,
       bitrate:   videoBitrate,
       framerate: fps,
-      avc:       { format: 'avc' }, // AVCC format (required by mp4-muxer)
+      ...(isWebM ? {} : { avc: { format: 'avc' } }),
     });
 
-    // ── Set up AudioEncoder (optional) ──────────────────────────────────────
+    // Set up AudioEncoder (MP4 only)
     let audioEncoder = null;
     if (hasAudioTracks && typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined') {
       audioEncoder = new AudioEncoder({
@@ -123,30 +137,28 @@ export class ExportEngine {
         error:  () => {},
       });
       await audioEncoder.configure({
-        codec:            'mp4a.40.2', // AAC-LC
+        codec:            'mp4a.40.2',
         numberOfChannels: 2,
         sampleRate:       44100,
         bitrate:          audioBitrate,
       });
     }
 
-    // ── Compositor + decoder pool ────────────────────────────────────────────
     const offscreen  = new OffscreenCanvas(width, height);
     const compositor = new Compositor(offscreen);
     compositor.init();
-    const decoders  = new DecoderPool(this._storage);
-    const lutCache     = new Map(); // assetId → WebGLTexture (owned by compositor)
+    const decoders     = new DecoderPool(this._storage);
+    const lutCache     = new Map();
     const textRenderer = new TextRenderer();
     this._fontCache.clear();
 
     const duration      = Math.max(totalDuration(project), 0.01);
     const frameDuration = 1 / fps;
     const totalFrames   = Math.ceil(duration * fps);
-    const KEY_INTERVAL  = fps * 2; // keyframe every 2 s
+    const KEY_INTERVAL  = fps * 2;
     const videoWeight   = hasAudioTracks ? 0.8 : 1.0;
 
     try {
-      // ── Phase 1: encode video frames ──────────────────────────────────────
       for (let i = 0; i < totalFrames; i++) {
         if (this._aborted) throw new Error('Export cancelled');
         if (videoError)    throw videoError;
@@ -156,23 +168,20 @@ export class ExportEngine {
 
         const bitmap = offscreen.transferToImageBitmap();
         const frame  = new VideoFrame(bitmap, {
-          timestamp: Math.round(time * 1_000_000),           // µs
-          duration:  Math.round(frameDuration * 1_000_000),  // µs
+          timestamp: Math.round(time * 1_000_000),
+          duration:  Math.round(frameDuration * 1_000_000),
         });
         bitmap.close();
 
         videoEncoder.encode(frame, { keyFrame: i % KEY_INTERVAL === 0 });
         frame.close();
 
-        // Backpressure: flush when the encode queue is deep
         if (videoEncoder.encodeQueueSize > 8) await videoEncoder.flush();
-
         onProgress(((i + 1) / totalFrames) * videoWeight);
       }
 
       await videoEncoder.flush();
 
-      // ── Phase 2: encode audio (if applicable) ─────────────────────────────
       if (audioEncoder) {
         await this._encodeAudio(project, audioEncoder, duration, (p) => {
           onProgress(videoWeight + p * (1 - videoWeight));
@@ -180,11 +189,9 @@ export class ExportEngine {
         await audioEncoder.flush();
       }
 
-      // ── Finalize mux ──────────────────────────────────────────────────────
       muxer.finalize();
 
     } finally {
-      // LUT textures are owned by compositor; dispose it first to release GL objects
       compositor.dispose();
       decoders.dispose();
     }
@@ -193,11 +200,86 @@ export class ExportEngine {
     return target.buffer;
   }
 
+  async _exportPNG(project, settings) {
+    this._aborted = false;
+    const {
+      width       = project.canvas.width,
+      height      = project.canvas.height,
+      transparent = false,
+      pngTime     = 0,
+    } = settings;
+    if (typeof OffscreenCanvas === 'undefined') {
+      throw new Error('OffscreenCanvas is not available in this browser.');
+    }
+    const offscreen  = new OffscreenCanvas(width, height);
+    const compositor = new Compositor(offscreen);
+    compositor.init({ transparent });
+    const decoders     = new DecoderPool(this._storage);
+    const lutCache     = new Map();
+    const textRenderer = new TextRenderer();
+    this._fontCache.clear();
+    try {
+      await this._renderFrame(compositor, decoders, project, pngTime, lutCache, textRenderer, transparent);
+      return offscreen.convertToBlob({ type: 'image/png' });
+    } finally {
+      compositor.dispose();
+      decoders.dispose();
+    }
+  }
+
+  async _exportGIF(project, settings, onProgress = () => {}) {
+    this._aborted = false;
+    const {
+      width  = project.canvas.width,
+      height = project.canvas.height,
+      gifFps = 10,
+    } = settings;
+    if (typeof OffscreenCanvas === 'undefined') {
+      throw new Error('OffscreenCanvas is not available in this browser.');
+    }
+    const { GIFEncoder, quantize, applyPalette } = await import(GIFENC_CDN);
+    if (this._aborted) throw new Error('Export cancelled');
+
+    const offscreen  = new OffscreenCanvas(width, height);
+    const compositor = new Compositor(offscreen);
+    compositor.init({ transparent: false });
+    const decoders     = new DecoderPool(this._storage);
+    const lutCache     = new Map();
+    const textRenderer = new TextRenderer();
+    this._fontCache.clear();
+
+    const duration    = Math.max(totalDuration(project), 0.01);
+    const frameDur    = 1 / gifFps;
+    const totalFrames = Math.ceil(duration * gifFps);
+    const gifDelay    = Math.round(frameDur * 100); // in centiseconds (gifenc unit)
+
+    const encoder = GIFEncoder();
+    try {
+      for (let i = 0; i < totalFrames; i++) {
+        if (this._aborted) throw new Error('Export cancelled');
+        const time = i * frameDur;
+        await this._renderFrame(compositor, decoders, project, time, lutCache, textRenderer);
+        const pixels  = compositor.getPixels();
+        if (pixels) {
+          const palette = quantize(pixels, 256);
+          const index   = applyPalette(pixels, palette);
+          encoder.writeFrame(index, width, height, { palette, delay: gifDelay, repeat: 0 });
+        }
+        onProgress((i + 1) / totalFrames);
+      }
+      encoder.finish();
+      return encoder.bytes();
+    } finally {
+      compositor.dispose();
+      decoders.dispose();
+    }
+  }
+
   // ─── Video frame rendering ────────────────────────────────────────────────────
 
-  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer) {
+  async _renderFrame(compositor, decoders, project, time, lutCache, textRenderer, transparent = false) {
     const bg = project.canvas?.background;
-    compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0);
+    compositor.clear(bg?.[0] ?? 0, bg?.[1] ?? 0, bg?.[2] ?? 0, transparent ? 0 : 1);
     compositor.setTime(time);
 
     const cw = project.canvas.width;

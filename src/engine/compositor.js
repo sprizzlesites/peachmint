@@ -177,9 +177,9 @@ export class Compositor {
    * Initialize the WebGL2 context and compile shaders.
    * Must be called before any draw calls. Throws if WebGL2 unavailable.
    */
-  init() {
+  init({ transparent = false } = {}) {
     const gl = this._canvas.getContext('webgl2', {
-      alpha: false,
+      alpha: transparent,
       antialias: false,
       premultipliedAlpha: false,
       preserveDrawingBuffer: false,
@@ -251,10 +251,17 @@ export class Compositor {
     gl.uniform1i(this._uniforms.lut, 1);
     gl.uniform1i(this._uniforms.lutEnabled, 0);
 
+    this._transparent = transparent;
+
     // Enable alpha blending (porter-duff over)
     gl.enable(gl.BLEND);
     gl.blendEquation(gl.FUNC_ADD);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    if (transparent) {
+      // Correct alpha compositing when canvas has alpha channel
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else {
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
 
     gl.useProgram(this._program);
 
@@ -277,7 +284,7 @@ export class Compositor {
    * Resize viewport to match canvas, then clear to black.
    * Call once per frame before drawing clips.
    */
-  clear(r = 0, g = 0, b = 0) {
+  clear(r = 0, g = 0, b = 0, a = 1) {
     if (!this._ready) return;
     const gl = this._gl;
     if (this._canvas.width !== this._canvasW || this._canvas.height !== this._canvasH) {
@@ -285,8 +292,29 @@ export class Compositor {
       this._canvasH = this._canvas.height;
       gl.viewport(0, 0, this._canvasW, this._canvasH);
     }
-    gl.clearColor(r, g, b, 1);
+    gl.clearColor(r, g, b, a);
     gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  /**
+   * Read back pixels from the WebGL framebuffer (for GIF/PNG export).
+   * Returns a Uint8ClampedArray in RGBA order, top-to-bottom.
+   */
+  getPixels() {
+    if (!this._ready) return null;
+    const gl = this._gl;
+    const w = this._canvasW;
+    const h = this._canvasH;
+    const raw = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);
+    // WebGL reads bottom-to-top; flip to top-to-bottom
+    const rowSize = w * 4;
+    const flipped = new Uint8ClampedArray(raw.length);
+    for (let y = 0; y < h; y++) {
+      const srcRow = h - 1 - y;
+      flipped.set(raw.subarray(srcRow * rowSize, (srcRow + 1) * rowSize), y * rowSize);
+    }
+    return flipped;
   }
 
   /**
