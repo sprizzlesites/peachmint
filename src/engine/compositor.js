@@ -182,6 +182,7 @@ export class Compositor {
     this._segTex    = null;
     this._dummySeg  = null;
     this._segEnabled = false;
+    this._adjTex    = null;
     this._uniforms = {};
     this._canvasW = 0;
     this._canvasH = 0;
@@ -511,6 +512,92 @@ export class Compositor {
     this._segEnabled = false;
   }
 
+  // ─── Adjustment layer API ─────────────────────────────────────────────────────
+
+  /**
+   * Capture the current framebuffer and re-render it through the full color/VFX
+   * pipeline using props. This implements adjustment layers: everything previously
+   * drawn is re-processed with the adjustment clip's color correction and VFX.
+   *
+   * Uses gl.copyTexImage2D to snapshot the framebuffer into a private texture, then
+   * draws that texture back with ONE/ZERO blend (replace mode) so the result exactly
+   * replaces the framebuffer rather than compositing on top.
+   *
+   * @param {object} props — resolved clip.properties (color, vfx, opacity)
+   * @param {number} w     — canvas width
+   * @param {number} h     — canvas height
+   */
+  applyAdjustment(props, w, h) {
+    if (!this._ready) return;
+    const gl = this._gl;
+
+    // Create/reuse the adjustment capture texture
+    gl.activeTexture(gl.TEXTURE0);
+    if (!this._adjTex) {
+      this._adjTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this._adjTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this._adjTex);
+    }
+
+    // Snapshot framebuffer → _adjTex (completes before next draw call)
+    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, w, h, 0);
+    gl.uniform1i(this._uniforms.tex, 0);
+
+    // LUT (honour active LUT if set by caller via setActiveLUT)
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, this._activeLUT ?? this._dummyLUT);
+    gl.uniform1i(this._uniforms.lut, 1);
+    gl.uniform1i(this._uniforms.lutEnabled, this._activeLUT ? 1 : 0);
+
+    // No segmentation for adjustment layers
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this._dummySeg);
+    gl.uniform1i(this._uniforms.segMask, 2);
+    gl.uniform1i(this._uniforms.segEnabled, 0);
+
+    // Color correction uniforms
+    const col = props?.color ?? {};
+    const vfx = props?.vfx  ?? {};
+    gl.uniform1f(this._uniforms.opacity,     props?.opacity ?? 1);
+    gl.uniform1f(this._uniforms.exposure,    col.exposure    ?? 0);
+    gl.uniform1f(this._uniforms.contrast,    col.contrast    ?? 0);
+    gl.uniform1f(this._uniforms.saturation,  col.saturation  ?? 0);
+    gl.uniform1f(this._uniforms.temperature, col.temperature ?? 0);
+    gl.uniform1f(this._uniforms.tint,        col.tint        ?? 0);
+
+    // No chroma key or shape mask on adjustment layers
+    gl.uniform1i(this._uniforms.chromaEnabled, 0);
+    gl.uniform1i(this._uniforms.maskType, 0);
+
+    // VFX uniforms
+    gl.uniform1f(this._uniforms.vfxVignette,   vfx.vignette   ?? 0);
+    gl.uniform1f(this._uniforms.vfxGrain,      vfx.grain      ?? 0);
+    gl.uniform1f(this._uniforms.vfxSharpen,    vfx.sharpen    ?? 0);
+    gl.uniform1f(this._uniforms.vfxAberration, vfx.aberration ?? 0);
+    gl.uniform1f(this._uniforms.vfxPixelate,   vfx.pixelate   ?? 0);
+
+    // Identity transform — covers the full canvas exactly
+    gl.uniformMatrix3fv(this._uniforms.xform, false, new Float32Array([1,0,0, 0,1,0, 0,0,1]));
+
+    // Replace blend: write adjusted pixels back without compositing on top of themselves
+    gl.blendFunc(gl.ONE, gl.ZERO);
+
+    gl.bindVertexArray(this._vao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Restore standard porter-duff over blend
+    if (this._transparent) {
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else {
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
+  }
+
   // ─── LUT API ──────────────────────────────────────────────────────────────────
 
   /**
@@ -570,6 +657,7 @@ export class Compositor {
     if (this._dummyLUT) gl.deleteTexture(this._dummyLUT);
     if (this._segTex)   gl.deleteTexture(this._segTex);
     if (this._dummySeg) gl.deleteTexture(this._dummySeg);
+    if (this._adjTex)   gl.deleteTexture(this._adjTex);
     gl.deleteBuffer(this._quadBuf);
     gl.deleteProgram(this._program);
     this._ready = false;

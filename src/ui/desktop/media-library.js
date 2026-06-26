@@ -35,6 +35,8 @@ export class MediaLibrary {
                     title="Add text clip" aria-label="Add text clip" disabled>T+</button>
             <button class="pm-lib-text-btn" id="pm-lib-add-draw"
                     title="Add draw layer" aria-label="Add draw layer" disabled>✏+</button>
+            <button class="pm-lib-text-btn" id="pm-lib-add-adj"
+                    title="Add adjustment layer" aria-label="Add adjustment layer" disabled>Adj</button>
             <button class="pm-lib-import-btn" id="pm-lib-import"
                     title="Import media files" aria-label="Import media files" disabled>
               + Import
@@ -89,6 +91,11 @@ export class MediaLibrary {
       this._addDrawClip();
     });
 
+    // Add adjustment layer button
+    this._el.querySelector('#pm-lib-add-adj')?.addEventListener('click', () => {
+      this._addAdjClip();
+    });
+
     // Import button → open file picker
     this._el.querySelector('#pm-lib-import')?.addEventListener('click', () => {
       this._filePicker.click();
@@ -134,6 +141,8 @@ export class MediaLibrary {
     if (textBtn) textBtn.disabled = !project;
     const drawBtn = this._el.querySelector('#pm-lib-add-draw');
     if (drawBtn) drawBtn.disabled = !project;
+    const adjBtn = this._el.querySelector('#pm-lib-add-adj');
+    if (adjBtn) adjBtn.disabled = !project;
   }
 
   // ─── Import ──────────────────────────────────────────────────────────────────
@@ -244,6 +253,28 @@ export class MediaLibrary {
         italic: false,
         lineHeight: 1.3,
       };
+    });
+    this._history.execute(cmd);
+    this._onProjectChanged();
+  }
+
+  _addAdjClip() {
+    if (!this._project) return;
+    const cmd = this._history.snapshotCommand('Add adjustment layer', (proj) => {
+      let track = proj.tracks.find((t) => t.type === 'overlay') ?? proj.tracks.find((t) => t.type === 'video');
+      if (!track) track = addTrack(proj, { type: 'overlay' });
+      let endTime = 0;
+      for (const c of track.clips) endTime = Math.max(endTime, c.startTime + c.duration);
+      const dur = 10;
+      const clip = addClip(proj, track.id, {
+        assetId: null,
+        startTime: endTime,
+        duration: dur,
+        trimIn: 0,
+        trimOut: dur,
+        speed: 1,
+      });
+      clip.properties.adjustment = true;
     });
     this._history.execute(cmd);
     this._onProjectChanged();

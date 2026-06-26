@@ -13,12 +13,13 @@ export class Inspector {
    * @param {HTMLElement} container
    * @param {{ pm, history, getCurrentTime, storage }} opts
    */
-  constructor(container, { pm, history, getCurrentTime, storage }) {
+  constructor(container, { pm, history, getCurrentTime, storage, onTrackRequest }) {
     this._el = container;
     this._pm = pm;
     this._history = history;
     this._storage = storage ?? null;
     this._getCurrentTime = getCurrentTime ?? (() => 0);
+    this._onTrackRequest = onTrackRequest ?? null;
     this._currentClip = null;
     this._mount();
   }
@@ -52,6 +53,7 @@ export class Inspector {
     const hasKF = (path) => (clip.keyframes[path]?.length ?? 0) > 0;
     const isTextClip = !clip.assetId && clip.properties.text != null;
     const isDrawClip = !clip.assetId && clip.properties.drawing != null;
+    const isAdjClip  = !clip.assetId && clip.properties.adjustment === true;
 
     this._el.querySelector('#pm-insp-header').innerHTML = `
       <span class="pm-insp-title">Clip</span>
@@ -81,6 +83,21 @@ export class Inspector {
         ${row('Type',   asset.type ?? '—')}
         ${asset.width ? row('Resolution', `${asset.width}×${asset.height}`) : ''}
         ${asset.duration ? row('Media dur.', formatSec(asset.duration)) : ''}
+        ${asset.type === 'video' ? `
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label"></span>
+          <button class="pm-btn-sm" id="pm-insp-track-btn" title="Track a point in this clip across time">Track Point…</button>
+        </div>` : ''}
+      </div>` : ''}
+
+      ${isAdjClip ? `
+      <div class="pm-insp-section">
+        <div class="pm-insp-section-label">Adjustment Layer</div>
+        <div class="pm-insp-row">
+          <span class="pm-insp-row-label" style="font-size:0.7rem;color:var(--text-dim);line-height:1.4">
+            Applies color correction and VFX to all clips rendered below it on the timeline.
+          </span>
+        </div>
       </div>` : ''}
 
       ${isDrawClip ? `
@@ -295,6 +312,11 @@ export class Inspector {
     // Wire keyframe delete buttons
     this._el.querySelectorAll('.pm-insp-kf-del').forEach((btn) => {
       btn.addEventListener('click', () => this._onDeleteKeyframe(btn.dataset.prop, parseFloat(btn.dataset.time)));
+    });
+
+    // Wire Track Point button
+    this._el.querySelector('#pm-insp-track-btn')?.addEventListener('click', () => {
+      if (this._currentClip && this._onTrackRequest) this._onTrackRequest(this._currentClip);
     });
 
     // Wire LUT buttons

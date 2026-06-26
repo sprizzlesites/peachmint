@@ -58,6 +58,12 @@ class DesktopShell {
     this._drawOnion    = true;
     this._drawLive     = null; // in-progress stroke points
     this._drawRenderer = null;
+
+    // Tracking state
+    this._trackingMode       = false;
+    this._trackSourceClip    = null;
+    this._trackingEscHandler = null;
+    this._trackPickHandler   = null;
   }
 
   mount() {
@@ -122,6 +128,7 @@ class DesktopShell {
       pm: this._pm, history: this._history,
       storage: this._storage,
       getCurrentTime: () => this._currentTime,
+      onTrackRequest: (clip) => this._enterTrackingPickMode(clip),
     });
 
     // Wire project manager events
@@ -451,6 +458,194 @@ class DesktopShell {
     const t    = Math.max(this._drawClip.startTime, Math.min(end - 1 / fps / 2, this._currentTime + step));
     this._onSeek(t);
     this._timeline?.seekTo(t);
+  }
+
+  // ─── Object tracking ──────────────────────────────────────────────────────────
+
+  _enterTrackingPickMode(clip) {
+    if (!this._pm.project) return;
+    this._cancelTrackingMode();
+    this._trackingMode    = true;
+    this._trackSourceClip = clip;
+
+    const preview = this._el.querySelector('#pm-preview');
+    if (preview) { preview.style.cursor = 'crosshair'; }
+
+    // Banner hint
+    const banner = document.createElement('div');
+    banner.id        = 'pm-track-banner';
+    banner.className = 'pm-track-banner';
+    banner.textContent = 'Click on the preview to set the tracking anchor — Escape to cancel';
+    this._el.querySelector('.pm-preview-area')?.prepend(banner);
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') this._cancelTrackingMode();
+    };
+    document.addEventListener('keydown', escHandler);
+    this._trackingEscHandler = escHandler;
+
+    const pickHandler = (e) => {
+      if (!this._trackingMode) return;
+      this._cancelTrackingMode();
+      const r  = preview.getBoundingClientRect();
+      const nx = (e.clientX - r.left) / r.width;
+      const ny = (e.clientY - r.top)  / r.height;
+      this._runTracking(clip, Math.max(0, Math.min(1, nx)), Math.max(0, Math.min(1, ny)));
+    };
+    preview.addEventListener('click', pickHandler, { once: true });
+    this._trackPickHandler = pickHandler;
+  }
+
+  _cancelTrackingMode() {
+    this._trackingMode    = false;
+    this._trackSourceClip = null;
+    const preview = this._el.querySelector('#pm-preview');
+    if (preview) {
+      preview.style.cursor = '';
+      if (this._trackPickHandler) {
+        preview.removeEventListener('click', this._trackPickHandler);
+        this._trackPickHandler = null;
+      }
+    }
+    if (this._trackingEscHandler) {
+      document.removeEventListener('keydown', this._trackingEscHandler);
+      this._trackingEscHandler = null;
+    }
+    this._el.querySelector('#pm-track-banner')?.remove();
+  }
+
+  async _runTracking(clip, anchorNX, anchorNY) {
+    if (!this._pm.project || !this._storage) return;
+
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'trk-title');
+    dialog.innerHTML = `
+      <h2 id="trk-title" style="margin:0 0 12px;font-size:1rem">Object Tracking</h2>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin:0 0 12px">
+        Anchor: (${(anchorNX * 100).toFixed(0)}%, ${(anchorNY * 100).toFixed(0)}%) — analysing frames…
+      </p>
+      <div style="background:var(--bg-base);border-radius:6px;overflow:hidden;height:6px">
+        <div id="trk-pbar" style="height:100%;width:0%;background:var(--accent-peach);transition:width .1s ease"></div>
+      </div>
+      <div id="trk-label" style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted);margin-top:6px">0%</div>
+      <div id="trk-error" style="display:none;color:var(--accent-err);font-size:0.75rem;margin-top:8px"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:16px">
+        <button class="btn-ghost" id="trk-cancel">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+
+    const pbar     = dialog.querySelector('#trk-pbar');
+    const label    = dialog.querySelector('#trk-label');
+    const errorEl  = dialog.querySelector('#trk-error');
+    const abortCtl = new AbortController();
+    let   done     = false;
+
+    dialog.querySelector('#trk-cancel').addEventListener('click', () => {
+      done = true; abortCtl.abort(); dialog.close(); dialog.remove();
+    });
+
+    try {
+      const { TrackingEngine } = await import('../../engine/tracker.js');
+      const engine = new TrackingEngine();
+
+      const kfs = await engine.track(
+        clip, this._pm.project, this._storage,
+        anchorNX, anchorNY,
+        (ratio) => {
+          pbar.style.width   = `${Math.round(ratio * 100)}%`;
+          label.textContent  = `${Math.round(ratio * 100)}%`;
+        },
+        abortCtl.signal,
+      );
+
+      if (done) return;
+      dialog.close(); dialog.remove();
+      this._showTrackApplyDialog(kfs);
+
+    } catch (err) {
+      if (done || err.message === 'Tracking cancelled') { if (!done) { dialog.close(); dialog.remove(); } return; }
+      errorEl.textContent = 'Tracking failed: ' + err.message;
+      errorEl.style.display = 'block';
+      label.textContent = '';
+      const cancelBtn = dialog.querySelector('#trk-cancel');
+      if (cancelBtn) cancelBtn.textContent = 'Close';
+    }
+  }
+
+  _showTrackApplyDialog(kfs) {
+    const project = this._pm.project;
+    if (!project) return;
+
+    const candidates = [];
+    for (const track of project.tracks) {
+      for (const clip of track.clips) {
+        const asset = clip.assetId ? project.assets.find((a) => a.id === clip.assetId) : null;
+        const name  = asset ? asset.name
+          : clip.properties.text   ? '[Text] ' + String(clip.properties.text.content ?? '').slice(0, 24)
+          : clip.properties.drawing ? '[Draw layer]'
+          : clip.properties.adjustment ? '[Adjustment]'
+          : '[Clip ' + clip.id.slice(0, 6) + ']';
+        candidates.push({ clip, name });
+      }
+    }
+
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'tap-title');
+    dialog.innerHTML = `
+      <h2 id="tap-title" style="margin:0 0 12px;font-size:1rem">Apply Tracking Data</h2>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin:0 0 12px">
+        ${kfs.length} position keyframes captured. Choose a clip to receive them as transform.x / transform.y:
+      </p>
+      <label class="pm-dlg-label">Target clip
+        <select id="tap-target" class="pm-input" style="width:100%">
+          ${candidates.map((c, i) => `<option value="${i}">${escHtml(c.name)}</option>`).join('')}
+          ${!candidates.length ? '<option value="" disabled>No clips in project</option>' : ''}
+        </select>
+      </label>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+        <button class="btn-ghost" id="tap-cancel">Cancel</button>
+        <button class="btn-primary" id="tap-apply" ${!candidates.length ? 'disabled' : ''}>Apply</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+
+    dialog.querySelector('#tap-cancel').addEventListener('click', () => { dialog.close(); dialog.remove(); });
+    dialog.querySelector('#tap-apply')?.addEventListener('click', () => {
+      const sel = dialog.querySelector('#tap-target');
+      const idx = parseInt(sel?.value ?? '0', 10);
+      if (!candidates[idx]) return;
+      dialog.close(); dialog.remove();
+      this._applyTrackingKfs(candidates[idx].clip, kfs);
+    });
+    dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') { dialog.close(); dialog.remove(); } });
+  }
+
+  _applyTrackingKfs(clip, kfs) {
+    if (!kfs.length || !this._pm.project) return;
+    const prevX = [...(clip.keyframes['transform.x'] ?? [])];
+    const prevY = [...(clip.keyframes['transform.y'] ?? [])];
+    const kfsX  = kfs.map((k) => ({ time: k.time, value: k.x, easing: 'linear' }));
+    const kfsY  = kfs.map((k) => ({ time: k.time, value: k.y, easing: 'linear' }));
+    this._history.execute({
+      label:   'Apply tracking keyframes',
+      execute: () => {
+        clip.keyframes['transform.x'] = kfsX;
+        clip.keyframes['transform.y'] = kfsY;
+        this._pm.markDirty();
+        if (this._selectedClip?.id === clip.id) this._inspector?.showClip(clip);
+      },
+      undo: () => {
+        clip.keyframes['transform.x'] = prevX;
+        clip.keyframes['transform.y'] = prevY;
+        this._pm.markDirty();
+        if (this._selectedClip?.id === clip.id) this._inspector?.showClip(clip);
+      },
+    });
   }
 
   // ─── Dialogs ─────────────────────────────────────────────────────────────────
@@ -1174,6 +1369,11 @@ function injectStyles() {
       border-color:var(--accent-peach) !important; font-weight:700; }
     .pm-start-new:hover { background:#ffaa88 !important; }
     .pm-start-note { font-size:0.75rem; color:var(--text-dim); margin-top:8px; }
+
+    /* Tracking pick-mode banner */
+    .pm-track-banner { background:var(--accent-purple); color:#fff; font-size:0.78rem;
+      padding:5px 14px; border-radius:6px; text-align:center; align-self:stretch;
+      flex-shrink:0; }
 
     /* New/Open project dialogs */
     dialog { background:var(--bg-surface); color:var(--text-primary);

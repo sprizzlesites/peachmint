@@ -340,6 +340,13 @@ export class ExportEngine {
             compositor.clearSegmentationMask();
             compositor.drawClip(canvas, props, cw, ch, outFactor ?? 1);
           }
+        } else if (clip.properties.adjustment) {
+          const props = resolveProps(clip, time);
+          const lutTex = lutCache
+            ? await resolveLUT(props.color?.lut, project, compositor, this._storage, lutCache)
+            : null;
+          compositor.setActiveLUT(lutTex);
+          compositor.applyAdjustment(props, cw, ch);
         }
         continue;
       }

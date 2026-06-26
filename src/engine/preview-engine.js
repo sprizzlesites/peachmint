@@ -204,7 +204,7 @@ export class PreviewEngine extends EventTarget {
         if (track.type === 'audio') continue;
         const outFactor = getTransitionOutFactor(clip, time);
 
-        // Synthetic clip: no assetId — text or draw
+        // Synthetic clip: no assetId — text, draw, or adjustment
         if (!clip.assetId) {
           if (clip.properties.text) {
             const props = resolveAnimatedProps(clip, time);
@@ -224,6 +224,11 @@ export class PreviewEngine extends EventTarget {
               this._compositor.clearSegmentationMask();
               this._compositor.drawClip(canvas, props, cw, ch, outFactor ?? 1);
             }
+          } else if (clip.properties.adjustment) {
+            const props = resolveAnimatedProps(clip, time);
+            const lutTex = await this._resolveLUT(props.color?.lut);
+            this._compositor.setActiveLUT(lutTex);
+            this._compositor.applyAdjustment(props, cw, ch);
           }
           continue;
         }
