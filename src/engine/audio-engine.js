@@ -1,29 +1,34 @@
 /**
- * audio-engine.js — Web Audio playback engine (Phase 1.7)
+ * audio-engine.js — Web Audio playback engine
  *
- * Plays audio-track clips in sync with the RAF-based PreviewEngine by
- * scheduling AudioBufferSourceNodes at precise AudioContext times.
+ * Audio graph:
+ *   source → clip_gain → track_gain → track_pan → track_analyser
+ *                                                         ↓
+ *                                              master_gain → master_analyser → destination
  *
- * Volume keyframe automation is mapped to the Web Audio AudioParam timeline:
- *   linear/ease/bezier → linearRampToValueAtTime
- *   hold               → setValueAtTime (step)
- *
- * Async buffer loads are guarded by a _stopped flag so that stop() called
- * during an in-progress play() cancels any pending schedules.
+ * Per-clip gain carries keyframe volume automation.
+ * Per-track gain + pan carries the mixer fader/pan controls.
+ * Master gain carries the master volume slider.
+ * AnalyserNodes on each track + master feed the VU meters.
  */
 
 export class AudioEngine {
   /** @param {{ storage: import('./storage.js').StorageLayer }} opts */
   constructor({ storage }) {
-    this._storage   = storage;
-    this._ctx       = null;
-    this._project   = null;
-    this._sources   = [];       // { source: AudioBufferSourceNode, gain: GainNode }[]
-    this._buffers   = new Map(); // assetId → AudioBuffer (decoded, cached)
-    this._playing   = false;
-    this._stopped   = false;    // guard: set true by stop(), aborts async scheduling
-    this._wallStart = 0;        // AudioContext.currentTime at the moment play() began
-    this._fromTime  = 0;        // project time we started playing from
+    this._storage       = storage;
+    this._ctx           = null;
+    this._project       = null;
+    this._sources       = [];        // { source: AudioBufferSourceNode, gain: GainNode }[]
+    this._buffers       = new Map(); // assetId → AudioBuffer (decoded, cached)
+    this._playing       = false;
+    this._stopped       = false;
+    this._wallStart     = 0;
+    this._fromTime      = 0;
+    // Master bus
+    this._masterGain     = null;
+    this._masterAnalyser = null;
+    // Per-track nodes  Map<trackId, {gain, pan, analyser}>
+    this._trackNodes     = new Map();
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
@@ -32,6 +37,7 @@ export class AudioEngine {
     if (this._ctx) return;
     try {
       this._ctx = new AudioContext();
+      this._buildMasterBus();
     } catch {
       // Will retry lazily in play() after a user gesture if blocked by browser policy
     }
@@ -39,6 +45,10 @@ export class AudioEngine {
 
   dispose() {
     this.stop();
+    this._disconnectTrackNodes();
+    this._trackNodes.clear();
+    this._masterGain     = null;
+    this._masterAnalyser = null;
     this._ctx?.close().catch(() => {});
     this._ctx = null;
     this._buffers.clear();
@@ -46,30 +56,49 @@ export class AudioEngine {
 
   setProject(project) {
     this._project = project;
-    // Flush buffer cache so stale buffers from a previous project don't linger
     this._buffers.clear();
+    this._disconnectTrackNodes();
+    this._trackNodes.clear(); // recreated on next play()
   }
 
   get isPlaying() { return this._playing; }
+
+  // ─── Mixer API ────────────────────────────────────────────────────────────
+
+  setMasterVolume(v) {
+    if (this._masterGain) this._masterGain.gain.value = Math.max(0, v);
+  }
+
+  setTrackVolume(trackId, v) {
+    const node = this._trackNodes.get(trackId);
+    if (node) node.gain.gain.value = Math.max(0, v);
+  }
+
+  setTrackPan(trackId, v) {
+    const node = this._trackNodes.get(trackId);
+    if (node) node.pan.pan.value = Math.max(-1, Math.min(1, v));
+  }
+
+  getMasterAnalyser() { return this._masterAnalyser; }
+  getTrackAnalyser(trackId) { return this._trackNodes.get(trackId)?.analyser ?? null; }
 
   // ─── Playback ──────────────────────────────────────────────────────────────
 
   /**
    * Start playing audio from the given project time.
-   * Async because it may need to decode audio buffers from OPFS.
    * @param {number} fromTime — project time in seconds
    */
   async play(fromTime) {
     if (!this._project || this._playing) return;
 
-    // Lazy AudioContext creation for browsers requiring a user gesture
     if (!this._ctx) {
       try { this._ctx = new AudioContext(); } catch { return; }
     }
-    // Safari/iOS auto-suspend; resume before scheduling
     if (this._ctx.state === 'suspended') {
       await this._ctx.resume().catch(() => {});
     }
+    if (!this._masterGain) this._buildMasterBus();
+    this._ensureTrackNodes(this._project.tracks);
 
     this._playing   = true;
     this._stopped   = false;
@@ -86,6 +115,57 @@ export class AudioEngine {
     this._stopAll();
   }
 
+  // ─── Internal: audio graph ─────────────────────────────────────────────────
+
+  _buildMasterBus() {
+    if (!this._ctx || this._masterGain) return;
+    this._masterAnalyser = this._ctx.createAnalyser();
+    this._masterAnalyser.fftSize = 256;
+    this._masterGain = this._ctx.createGain();
+    this._masterGain.gain.value = 1.0;
+    this._masterGain.connect(this._masterAnalyser);
+    this._masterAnalyser.connect(this._ctx.destination);
+  }
+
+  _ensureTrackNodes(tracks) {
+    if (!this._ctx || !this._masterGain) return;
+    const ids = new Set(tracks.map((t) => t.id));
+    // Remove stale nodes for tracks that no longer exist
+    for (const id of this._trackNodes.keys()) {
+      if (!ids.has(id)) {
+        const n = this._trackNodes.get(id);
+        try { n.gain.disconnect(); n.pan.disconnect(); n.analyser.disconnect(); } catch {}
+        this._trackNodes.delete(id);
+      }
+    }
+    for (const track of tracks) {
+      if (track.type === 'overlay') continue; // overlay tracks carry no audio
+      if (!this._trackNodes.has(track.id)) {
+        const gain    = this._ctx.createGain();
+        gain.gain.value = Math.max(0, track.volume ?? 1);
+        const pan     = this._ctx.createStereoPanner();
+        pan.pan.value = Math.max(-1, Math.min(1, track.pan ?? 0));
+        const analyser = this._ctx.createAnalyser();
+        analyser.fftSize = 256;
+        gain.connect(pan);
+        pan.connect(analyser);
+        analyser.connect(this._masterGain);
+        this._trackNodes.set(track.id, { gain, pan, analyser });
+      } else {
+        // Sync values that may have changed while paused
+        const node = this._trackNodes.get(track.id);
+        node.gain.gain.value = Math.max(0, track.volume ?? 1);
+        node.pan.pan.value   = Math.max(-1, Math.min(1, track.pan ?? 0));
+      }
+    }
+  }
+
+  _disconnectTrackNodes() {
+    for (const n of this._trackNodes.values()) {
+      try { n.gain.disconnect(); n.pan.disconnect(); n.analyser.disconnect(); } catch {}
+    }
+  }
+
   // ─── Internal: scheduling ──────────────────────────────────────────────────
 
   async _scheduleAll(fromTime) {
@@ -94,21 +174,21 @@ export class AudioEngine {
     for (const track of this._project.tracks) {
       if (this._stopped) return;
       if (track.muted) continue;
-      if (track.type !== 'audio') continue; // video audio extraction: Phase 2+
+      if (track.type !== 'audio') continue;
 
       for (const clip of track.clips) {
         if (this._stopped) return;
-        if (clip.startTime + clip.duration <= fromTime) continue; // entirely in the past
+        if (clip.startTime + clip.duration <= fromTime) continue;
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
         if (!asset?.storageKey || asset.type !== 'audio') continue;
 
-        await this._scheduleClip(clip, asset, fromTime).catch(() => {});
+        await this._scheduleClip(clip, asset, fromTime, track.id).catch(() => {});
       }
     }
   }
 
-  async _scheduleClip(clip, asset, fromTime) {
+  async _scheduleClip(clip, asset, fromTime, trackId) {
     if (this._stopped) return;
 
     const buf = await this._getBuffer(asset);
@@ -119,16 +199,11 @@ export class AudioEngine {
     const clipStart = clip.startTime;
     const clipEnd   = clip.startTime + clip.duration;
 
-    // Where in the source buffer playback begins
-    const projOffsetInClip = Math.max(0, fromTime - clipStart);
-    const sourceOffsetBase = trimIn + projOffsetInClip * speed;
-
-    // When (in AudioContext wall time) this clip should start
+    const projOffsetInClip  = Math.max(0, fromTime - clipStart);
+    const sourceOffsetBase  = trimIn + projOffsetInClip * speed;
     const delaySeconds      = Math.max(0, clipStart - fromTime);
     const ctxScheduledStart = this._wallStart + delaySeconds;
 
-    // Compensate for async buffer-load latency: if the scheduled start
-    // is now in the past, advance the source offset to catch up.
     const now = this._ctx.currentTime;
     let ctxStart     = ctxScheduledStart;
     let sourceOffset = sourceOffsetBase;
@@ -136,25 +211,26 @@ export class AudioEngine {
     if (ctxScheduledStart < now) {
       const slippedWallSecs = now - ctxScheduledStart;
       sourceOffset += slippedWallSecs * speed;
-      ctxStart = now + 0.015; // ~1 frame lookahead
+      ctxStart = now + 0.015; // ~1 frame lookahead to avoid underrun
     }
 
-    // Remaining project duration to play
     const projPlayFrom   = Math.max(fromTime + (ctxStart - ctxScheduledStart), clipStart);
     const projRemaining  = clipEnd - projPlayFrom;
     const sourceDuration = projRemaining * speed;
     if (sourceDuration <= 0 || sourceOffset >= buf.duration) return;
 
-    // Build audio graph: source → gain → destination
     const source = this._ctx.createBufferSource();
     source.buffer = buf;
     source.playbackRate.value = speed;
 
+    // Clip-level gain carries keyframe volume automation
     const gainNode = this._ctx.createGain();
     source.connect(gainNode);
-    gainNode.connect(this._ctx.destination);
 
-    // Schedule volume / keyframe automation on the GainNode
+    // Route through track node → master bus (fallback: direct to master/destination)
+    const trackNode = this._trackNodes.get(trackId);
+    gainNode.connect(trackNode ? trackNode.gain : (this._masterGain ?? this._ctx.destination));
+
     this._scheduleGain(gainNode, clip, Math.max(fromTime, clipStart), ctxStart, clipEnd);
 
     source.start(
@@ -167,27 +243,18 @@ export class AudioEngine {
   }
 
   /**
-   * Schedule GainNode.gain automation to match clip volume keyframes.
-   *
-   * @param {GainNode} gainNode
-   * @param {object}   clip
-   * @param {number}   projStart   — project time at which audio actually starts (≥ clip.startTime)
-   * @param {number}   ctxStart    — AudioContext time corresponding to projStart
-   * @param {number}   clipEnd     — project time at which the clip ends
+   * Schedule GainNode.gain automation for clip volume keyframes.
    */
   _scheduleGain(gainNode, clip, projStart, ctxStart, clipEnd) {
     const baseVol = clip.properties?.volume ?? 1;
     const kfs     = clip.keyframes?.volume ?? [];
-
-    // Project time → AudioContext time
-    const toCtx = (pt) => ctxStart + (pt - projStart);
+    const toCtx   = (pt) => ctxStart + (pt - projStart);
 
     if (kfs.length === 0) {
       gainNode.gain.setValueAtTime(baseVol, ctxStart);
       return;
     }
 
-    // Set initial gain at the exact start moment
     const initVal = _lerpKfs(kfs, projStart, baseVol);
     gainNode.gain.setValueAtTime(initVal, ctxStart);
 
@@ -197,16 +264,12 @@ export class AudioEngine {
       if (kf.time > clipEnd)   break;
 
       const ctxT = toCtx(kf.time);
-
       if (kf.easing === 'hold') {
-        // Step: hold prevVal until just before this keyframe, then snap
         gainNode.gain.setValueAtTime(prevVal, ctxT - 0.001);
         gainNode.gain.setValueAtTime(kf.value, ctxT);
       } else {
-        // Linear ramp (close enough for ease/bezier in an audio context)
         gainNode.gain.linearRampToValueAtTime(kf.value, ctxT);
       }
-
       prevVal = kf.value;
     }
   }
@@ -224,7 +287,6 @@ export class AudioEngine {
     try {
       const ab = await this._storage.readMedia(asset.storageKey);
       if (!ab || this._stopped) return null;
-      // decodeAudioData neuters the input ArrayBuffer; pass a copy to be safe
       const decoded = await this._ctx.decodeAudioData(
         ab instanceof ArrayBuffer ? ab.slice(0) : ab.buffer.slice(ab.byteOffset, ab.byteOffset + ab.byteLength),
       );
@@ -238,10 +300,6 @@ export class AudioEngine {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Linear interpolation through a sorted keyframe array at time t.
- * Returns fallback when no keyframes exist.
- */
 function _lerpKfs(kfs, t, fallback) {
   if (!kfs.length) return fallback;
   if (t <= kfs[0].time)              return kfs[0].value;

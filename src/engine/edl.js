@@ -45,6 +45,8 @@ export function createTrack({ type = 'video', name, zIndex } = {}) {
     solo: false,
     locked: false,
     zIndex: zIndex ?? 0,
+    volume: 1.0,
+    pan: 0.0,
     clips: [],
   };
 }

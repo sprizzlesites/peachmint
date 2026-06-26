@@ -68,6 +68,9 @@ class DesktopShell {
 
     // Waveform analysis cache
     this._waveformCache = null;
+    // Master VU meter RAF
+    this._masterVuRafId = null;
+    this._masterVuBuf   = null;
   }
 
   mount() {
@@ -129,6 +132,7 @@ class DesktopShell {
     });
     this._waveformCache = new WaveformCache(this._storage);
     this._timeline.setWaveformCache(this._waveformCache);
+    this._timeline.setAudioEngine(this._audioEngine);
 
     this._inspector = new Inspector(this._el.querySelector('#pm-inspector'), {
       pm: this._pm, history: this._history,
@@ -203,6 +207,7 @@ class DesktopShell {
     // Sync preview engine and canvas aspect ratio to project settings
     this._previewEngine?.setProject(project);
     this._audioEngine?.setProject(project);
+    this._startMasterVuLoop();
     const { width, height } = project.canvas;
     const wrap = this._el.querySelector('.pm-canvas-wrap');
     if (wrap) wrap.style.aspectRatio = `${width} / ${height}`;
@@ -215,6 +220,7 @@ class DesktopShell {
     this._stop();
     this._previewEngine?.setProject(null);
     this._audioEngine?.setProject(null);
+    this._stopMasterVuLoop();
     this._showStartScreen();
     const nameEl = this._el.querySelector('#pm-project-name');
     if (nameEl) { nameEl.textContent = ''; nameEl.title = ''; }
@@ -1143,6 +1149,49 @@ class DesktopShell {
       const total = this._pm.project ? Math.max(totalDuration(this._pm.project), 10) : 0;
       this._stop(); this._onSeek(total); this._timeline?.seekTo(total);
     });
+    this._el.querySelector('#pm-master-vol')?.addEventListener('input', (e) => {
+      this._audioEngine?.setMasterVolume(Number(e.target.value));
+    });
+  }
+
+  _startMasterVuLoop() {
+    if (this._masterVuRafId) return;
+    if (!this._masterVuBuf) this._masterVuBuf = new Float32Array(256);
+    const buf = this._masterVuBuf;
+    const tick = () => {
+      const canvas   = this._el.querySelector('#pm-master-vu');
+      const analyser = this._audioEngine?.getMasterAnalyser?.();
+      if (canvas && analyser) {
+        analyser.getFloatTimeDomainData(buf);
+        let rms = 0;
+        for (const v of buf) rms += v * v;
+        rms = Math.sqrt(rms / buf.length);
+        const ctx = canvas.getContext('2d');
+        const cw = canvas.width, ch = canvas.height;
+        ctx.clearRect(0, 0, cw, ch);
+        if (rms >= 0.001) {
+          const level = Math.min(1, rms * 3);
+          const fillW = Math.round(level * cw);
+          const grad = ctx.createLinearGradient(0, 0, cw, 0);
+          grad.addColorStop(0,    '#50fa7b');
+          grad.addColorStop(0.65, '#f1fa8c');
+          grad.addColorStop(1,    '#ff5555');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, fillW, ch);
+          ctx.fillStyle = 'rgba(255,255,255,0.04)';
+          ctx.fillRect(fillW, 0, cw - fillW, ch);
+        }
+      }
+      this._masterVuRafId = requestAnimationFrame(tick);
+    };
+    this._masterVuRafId = requestAnimationFrame(tick);
+  }
+
+  _stopMasterVuLoop() {
+    if (this._masterVuRafId) {
+      cancelAnimationFrame(this._masterVuRafId);
+      this._masterVuRafId = null;
+    }
   }
 
   // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
@@ -1236,6 +1285,12 @@ function buildHTML() {
               <button id="pm-play-btn" class="pm-btn-xport pm-btn-play" aria-label="Play" title="Play / Pause (Space)">▶</button>
               <button id="pm-fwd-btn" class="pm-btn-xport" aria-label="Go to end" title="Go to end (End)">⏭</button>
               <span id="pm-timecode" class="pm-timecode" aria-live="polite" aria-label="Current timecode">00:00:00:00</span>
+              <span class="pm-master-vol-label" aria-hidden="true">Vol</span>
+              <input type="range" id="pm-master-vol" class="pm-master-vol-slider"
+                     min="0" max="1.5" step="0.01" value="1"
+                     title="Master volume (0–150%)" aria-label="Master volume">
+              <canvas id="pm-master-vu" class="pm-master-vu" width="60" height="10"
+                      aria-hidden="true"></canvas>
             </div>
           </div>
           <div id="pm-tl-resize" class="pm-tl-resize-handle" role="separator" aria-orientation="horizontal" aria-label="Resize timeline" tabindex="0"></div>
@@ -1336,6 +1391,16 @@ function injectStyles() {
       color:var(--accent-peach) !important; }
     .pm-timecode { font-family:var(--font-mono); font-size:0.85rem; color:var(--accent-blue);
       min-width:110px; padding:0 6px; }
+    .pm-master-vol-label { font-family:var(--font-mono); font-size:0.65rem; color:var(--text-dim);
+      flex-shrink:0; margin-left:4px; }
+    .pm-master-vol-slider { -webkit-appearance:none; appearance:none; width:72px; height:4px;
+      border-radius:2px; background:var(--border-hi); outline:none; cursor:pointer; flex-shrink:0; }
+    .pm-master-vol-slider::-webkit-slider-thumb { -webkit-appearance:none;
+      width:12px; height:12px; border-radius:50%; background:var(--accent-peach); cursor:pointer; }
+    .pm-master-vol-slider::-moz-range-thumb { width:12px; height:12px; border-radius:50%;
+      background:var(--accent-peach); cursor:pointer; border:none; }
+    .pm-master-vu { height:10px; border-radius:2px; background:rgba(255,255,255,0.05);
+      flex-shrink:0; align-self:center; }
 
     /* Timeline resize handle */
     .pm-tl-resize-handle { height:4px; background:var(--border); cursor:row-resize;

@@ -21,8 +21,9 @@ import {
 
 const HEADER_W = 180;        // px — width of track header column
 const RULER_H  = 28;         // px — height of time ruler
-const VIDEO_TRACK_H = 56;    // px — height of video/overlay track lanes
-const AUDIO_TRACK_H = 40;    // px — height of audio track lanes
+const VIDEO_TRACK_H   = 72;  // px — height of video track lanes
+const AUDIO_TRACK_H   = 56;  // px — height of audio track lanes
+const OVERLAY_TRACK_H = 56;  // px — height of overlay track lanes (same as before)
 const ADD_BTN_H = 36;        // px — height of "add track" row
 const MIN_PX_PER_SEC = 5;
 const MAX_PX_PER_SEC = 2000;
@@ -72,6 +73,9 @@ export class Timeline {
     this._selectedClipIds = new Set();
     this._waveformCache   = null;
     this._snapEnabled     = true;
+    this._audioEngine     = null;
+    this._vuRafId         = null;
+    this._vuBuf           = null;
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -80,6 +84,8 @@ export class Timeline {
     this._project = project;
     if (!this._mounted) this._mount();
     this._render();
+    if (project) this._startVuLoop();
+    else this._stopVuLoop();
   }
 
   seekTo(time) {
@@ -98,6 +104,7 @@ export class Timeline {
   zoomOut() { this._setZoom(this._pxPerSec / 1.5); }
 
   setWaveformCache(cache) { this._waveformCache = cache; }
+  setAudioEngine(engine)  { this._audioEngine = engine; }
 
   // Align each Ctrl-selected clip so its loudest audio peak lands at the
   // same absolute project time as the first selected clip's peak.
@@ -128,6 +135,51 @@ export class Timeline {
       undo:    () => { moves.forEach((m) => { m.clip.startTime = m.oldStart;  }); this._pm.markDirty(); this._render(); },
     });
     return true;
+  }
+
+  // ─── VU metering ────────────────────────────────────────────────────────────
+
+  _startVuLoop() {
+    if (this._vuRafId) return;
+    const tick = () => {
+      this._paintVuMeters();
+      this._vuRafId = requestAnimationFrame(tick);
+    };
+    this._vuRafId = requestAnimationFrame(tick);
+  }
+
+  _stopVuLoop() {
+    if (this._vuRafId) { cancelAnimationFrame(this._vuRafId); this._vuRafId = null; }
+  }
+
+  _paintVuMeters() {
+    if (!this._audioEngine || !this._headersEl) return;
+    const canvases = this._headersEl.querySelectorAll('.pm-tl-vu-meter');
+    if (!canvases.length) return;
+    if (!this._vuBuf) this._vuBuf = new Float32Array(256);
+    const buf = this._vuBuf;
+    for (const canvas of canvases) {
+      const analyser = this._audioEngine.getTrackAnalyser?.(canvas.dataset.trackId);
+      const ctx2d = canvas.getContext('2d');
+      const cw = canvas.width, ch = canvas.height;
+      ctx2d.clearRect(0, 0, cw, ch);
+      if (!analyser) continue;
+      analyser.getFloatTimeDomainData(buf);
+      let rms = 0;
+      for (const v of buf) rms += v * v;
+      rms = Math.sqrt(rms / buf.length);
+      if (rms < 0.001) continue;
+      const level = Math.min(1, rms * 3);
+      const fillW = Math.round(level * cw);
+      const grad = ctx2d.createLinearGradient(0, 0, cw, 0);
+      grad.addColorStop(0, '#50fa7b');
+      grad.addColorStop(0.65, '#f1fa8c');
+      grad.addColorStop(1,   '#ff5555');
+      ctx2d.fillStyle = grad;
+      ctx2d.fillRect(0, 0, fillW, ch);
+      ctx2d.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx2d.fillRect(fillW, 0, cw - fillW, ch);
+    }
   }
 
   // ─── Mount ──────────────────────────────────────────────────────────────────
@@ -286,18 +338,19 @@ export class Timeline {
     sortedTracks.forEach((track, idx) => {
       const h = trackHeight(track);
       const col = TRACK_COLORS[track.type] ?? TRACK_COLORS.video;
+      const hasMixer = track.type === 'audio' || track.type === 'video';
       const div = document.createElement('div');
-      div.className = 'pm-tl-track-header';
+      div.className = `pm-tl-track-header${hasMixer ? ' pm-tl-track-header--mix' : ''}`;
       div.dataset.trackId = track.id;
       div.style.height = `${h}px`;
       div.style.borderLeftColor = col.bg;
-      div.innerHTML = `
+
+      const controlsHtml = `
         <div class="pm-tl-th-type" style="background:${col.bg};color:${col.text}" aria-hidden="true">
           ${typeIcon(track.type)}
         </div>
         <div class="pm-tl-th-name" contenteditable="true" spellcheck="false"
-             aria-label="Track name"
-             title="Double-click to rename">${escHtml(track.name)}</div>
+             aria-label="Track name" title="Double-click to rename">${escHtml(track.name)}</div>
         <div class="pm-tl-th-controls">
           <button class="pm-tl-th-btn ${track.muted ? 'active' : ''}"
                   data-action="mute" title="Mute" aria-label="Mute track"
@@ -316,6 +369,41 @@ export class Timeline {
           <button class="pm-tl-zo-btn" data-action="zdown" title="Move layer down" aria-label="Move layer down" ${idx === 0 ? 'disabled' : ''}>▼</button>
         </div>
       `;
+
+      if (hasMixer) {
+        const volPct = Math.round((track.volume ?? 1) * 100);
+        div.innerHTML = `
+          <div class="pm-tl-th-top">${controlsHtml}</div>
+          <div class="pm-tl-th-mixer">
+            <canvas class="pm-tl-vu-meter" data-track-id="${track.id}" width="44" height="6"
+                    aria-hidden="true"></canvas>
+            <input type="range" class="pm-tl-th-vol" data-track-id="${track.id}"
+                   min="0" max="1.5" step="0.01" value="${track.volume ?? 1}"
+                   title="Volume" aria-label="Track volume">
+            <input type="range" class="pm-tl-th-pan" data-track-id="${track.id}"
+                   min="-1" max="1" step="0.01" value="${track.pan ?? 0}"
+                   title="Pan (L/R)" aria-label="Track pan">
+            <span class="pm-tl-th-vol-val">${volPct}%</span>
+          </div>
+        `;
+        // Wire mixer sliders (no undo — live mixer controls)
+        div.querySelector('.pm-tl-th-vol').addEventListener('input', (e) => {
+          const v = Number(e.target.value);
+          track.volume = v;
+          this._pm.markDirty();
+          this._audioEngine?.setTrackVolume(track.id, v);
+          const valEl = div.querySelector('.pm-tl-th-vol-val');
+          if (valEl) valEl.textContent = `${Math.round(v * 100)}%`;
+        });
+        div.querySelector('.pm-tl-th-pan').addEventListener('input', (e) => {
+          const v = Number(e.target.value);
+          track.pan = v;
+          this._pm.markDirty();
+          this._audioEngine?.setTrackPan(track.id, v);
+        });
+      } else {
+        div.innerHTML = controlsHtml;
+      }
 
       // Track name edit
       const nameEl = div.querySelector('.pm-tl-th-name');
@@ -343,9 +431,11 @@ export class Timeline {
   }
 
   _renderLanes(sortedTracks, totalW) {
-    // Clear previous lanes
+    // Preserve overlay elements before clearing
+    const ph       = this._lanesInner.querySelector('#pm-tl-playhead');
+    const snapLine = this._lanesInner.querySelector('#pm-tl-snap-line');
     Array.from(this._lanesInner.children).forEach((el) => {
-      if (!el.id?.includes('playhead')) el.remove();
+      if (el !== ph && el !== snapLine) el.remove();
     });
 
     // Set inner width
@@ -400,9 +490,9 @@ export class Timeline {
       yOffset += h;
     });
 
-    // Keep playhead on top
-    const ph = this._el.querySelector('#pm-tl-playhead');
-    if (ph) this._lanesInner.appendChild(ph);
+    // Re-append overlays on top
+    if (ph)       this._lanesInner.appendChild(ph);
+    if (snapLine) this._lanesInner.appendChild(snapLine);
   }
 
   _buildClipEl(clip, track, laneH) {
@@ -1276,6 +1366,32 @@ function injectStyles() {
       background:var(--accent-blue,#8be9fd); pointer-events:none; opacity:0;
       transform:translateX(0); will-change:transform; z-index:18;
       transition:opacity 0.05s; }
+
+    /* Mixer track header: 2-row column layout */
+    .pm-tl-track-header--mix { flex-direction:column; align-items:stretch; justify-content:center; }
+    .pm-tl-th-top { display:flex; align-items:center; gap:4px; padding:0 6px 0 0; flex:1; }
+    .pm-tl-th-mixer { display:flex; align-items:center; gap:3px; padding:0 4px 3px 24px; flex-shrink:0; }
+
+    /* VU meter canvas in mixer strip */
+    .pm-tl-vu-meter { height:6px; flex-shrink:0; border-radius:1px;
+      background:rgba(255,255,255,0.05); align-self:center; }
+
+    /* Vol / pan range sliders */
+    .pm-tl-th-vol, .pm-tl-th-pan {
+      -webkit-appearance:none; appearance:none;
+      height:4px; border-radius:2px; outline:none; cursor:pointer;
+      background:var(--border-hi); flex-shrink:0; }
+    .pm-tl-th-vol { width:56px; }
+    .pm-tl-th-pan { width:40px; }
+    .pm-tl-th-vol::-webkit-slider-thumb, .pm-tl-th-pan::-webkit-slider-thumb {
+      -webkit-appearance:none; width:10px; height:10px; border-radius:50%;
+      background:var(--text-primary); cursor:pointer; }
+    .pm-tl-th-vol::-moz-range-thumb, .pm-tl-th-pan::-moz-range-thumb {
+      width:10px; height:10px; border-radius:50%; background:var(--text-primary);
+      cursor:pointer; border:none; }
+    .pm-tl-th-vol:hover, .pm-tl-th-pan:hover { background:var(--border); }
+    .pm-tl-th-vol-val { font-family:var(--font-mono); font-size:0.55rem;
+      color:var(--text-dim); min-width:22px; text-align:right; flex-shrink:0; }
   `;
   document.head.appendChild(s);
 }
@@ -1283,7 +1399,9 @@ function injectStyles() {
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function trackHeight(track) {
-  return track.type === 'audio' ? AUDIO_TRACK_H : VIDEO_TRACK_H;
+  if (track.type === 'audio')   return AUDIO_TRACK_H;
+  if (track.type === 'overlay') return OVERLAY_TRACK_H;
+  return VIDEO_TRACK_H;
 }
 
 function typeIcon(type) {
