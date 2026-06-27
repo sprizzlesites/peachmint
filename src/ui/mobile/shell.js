@@ -364,9 +364,13 @@ class MobileShell {
   async _ingestFile(file) {
     const ab = await file.arrayBuffer();
     const key = await this._storage.writeMedia(file.name, ab);
-    const type = file.type.startsWith('audio') ? 'audio' : 'video';
-    let duration = 0;
-    try { duration = await probeDuration(file); } catch {}
+    const type = file.type.startsWith('audio') ? 'audio'
+               : file.type.startsWith('image') ? 'image'
+               : 'video';
+    let duration = null;
+    if (type !== 'image') {
+      try { duration = await probeDuration(file); } catch {}
+    }
     const asset = {
       id: `asset_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name: file.name, type, mimeType: file.type,
@@ -380,14 +384,15 @@ class MobileShell {
     if (!project) return;
     const asset = project.assets.find((a) => a.id === assetId);
     if (!asset) return;
-    let track = project.tracks.find((t) => t.type === asset.type && !t.locked);
+    const trackType = asset.type === 'audio' ? 'audio' : 'video';
+    let track = project.tracks.find((t) => t.type === trackType && !t.locked);
     if (!track) {
-      this._pm.mutate((proj) => addTrack(proj, { type: asset.type }));
+      this._pm.mutate((proj) => addTrack(proj, { type: trackType }));
       track = this._pm.project.tracks.at(-1);
     }
     const startTime = totalDuration(project);
     const cmd = this._history.snapshotCommand('Add clip', (proj) => {
-      addClip(proj, track.id, { assetId: asset.id, startTime, duration: asset.duration ?? 5 });
+      addClip(proj, track.id, { assetId: asset.id, startTime, duration: asset.duration || 5 });
     });
     this._history.execute(cmd);
     this._renderTimeline();
