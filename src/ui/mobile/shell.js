@@ -852,28 +852,26 @@ class MobileShell {
     const d = document.createElement('dialog');
     d.setAttribute('aria-modal', 'true');
     d.innerHTML = `
-      <h2 style="margin:0 0 10px;font-size:1rem">Clear App Cache?</h2>
-      <p style="color:var(--text-muted);font-size:0.82rem;line-height:1.5;margin:0 0 16px">
-        Deletes the service worker cache and reloads the app from the network.
-        Your saved projects are <strong>not</strong> affected.
+      <h2 style="margin:0 0 10px;font-size:1rem">Reset All App Data?</h2>
+      <p style="color:var(--text-muted);font-size:0.82rem;line-height:1.5;margin:0 0 8px">
+        This will permanently delete:
+      </p>
+      <ul style="color:var(--accent-err);font-size:0.8rem;margin:0 0 16px;padding-left:18px;line-height:1.8">
+        <li>All saved projects</li>
+        <li>All imported media files</li>
+        <li>The service worker app cache</li>
+      </ul>
+      <p style="color:var(--text-dim);font-size:0.75rem;margin:0 0 16px">
+        Use this if the app is stuck or storage is full. The app will reload fresh from the network.
       </p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="pm-m-btn-ghost" id="cc-cancel">Cancel</button>
-        <button class="pm-m-btn-primary" id="cc-confirm">Clear &amp; Reload</button>
+        <button style="background:var(--accent-err);border:none;color:#fff;border-radius:6px;padding:8px 16px;font-size:0.85rem;font-weight:700;cursor:pointer;font-family:var(--font-ui)" id="cc-confirm">Delete All &amp; Reload</button>
       </div>`;
     document.body.appendChild(d);
     d.showModal();
     d.querySelector('#cc-cancel').addEventListener('click', () => { d.close(); d.remove(); });
-    d.querySelector('#cc-confirm').addEventListener('click', async () => {
-      d.close(); d.remove();
-      try {
-        const keys = await caches.keys();
-        await Promise.all(keys.map((k) => caches.delete(k)));
-        const regs = await navigator.serviceWorker?.getRegistrations() ?? [];
-        await Promise.all(regs.map((r) => r.unregister()));
-      } catch { /* ignore — reload regardless */ }
-      location.reload();
-    });
+    d.querySelector('#cc-confirm').addEventListener('click', () => { d.close(); d.remove(); clearAppCache(); });
     d.addEventListener('keydown', (e) => { if (e.key === 'Escape') { d.close(); d.remove(); } });
   }
 

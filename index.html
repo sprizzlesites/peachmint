@@ -118,11 +118,7 @@
       flex-direction: column;
       align-items: center;
       gap: 8px;
-      opacity: 0;
-      transition: opacity 0.6s ease;
-      pointer-events: none;
     }
-    .loading-stuck.visible { opacity: 1; pointer-events: auto; }
     .loading-stuck-msg { font-size: 0.7rem; color: var(--text-dim); }
     .loading-clear-btn {
       background: transparent;
@@ -562,9 +558,9 @@
     <div class="loading-bar" role="progressbar" aria-label="Loading">
       <div class="loading-bar-fill"></div>
     </div>
-    <div class="loading-stuck" id="loading-stuck" aria-live="polite">
-      <div class="loading-stuck-msg">Taking too long?</div>
-      <button class="loading-clear-btn" onclick="clearAppCache()">Clear Cache &amp; Reload</button>
+    <div class="loading-stuck">
+      <div class="loading-stuck-msg">Stuck? This will erase all projects.</div>
+      <button class="loading-clear-btn" onclick="clearAppCache()">Reset App Data &amp; Reload</button>
     </div>
   </div>
 
@@ -572,17 +568,27 @@
   <div id="app-root" role="application" aria-label="PeachMint Video Editor"></div>
 
   <script>
-    // Show "stuck?" help after 5 s if still on loading screen
-    setTimeout(() => {
-      const el = document.getElementById('loading-stuck');
-      if (el) el.classList.add('visible');
-    }, 5000);
-
-    function clearAppCache() {
-      Promise.all([
-        'caches' in window ? caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))) : Promise.resolve(),
-        navigator.serviceWorker ? navigator.serviceWorker.getRegistrations().then(regs => Promise.all(regs.map(r => r.unregister()))) : Promise.resolve(),
-      ]).catch(() => {}).then(() => location.reload());
+    async function clearAppCache() {
+      // 1. Delete all Cache API entries (service worker app cache)
+      if ('caches' in window) {
+        const keys = await caches.keys().catch(() => []);
+        await Promise.all(keys.map(k => caches.delete(k))).catch(() => {});
+      }
+      // 2. Unregister all service workers
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+        await Promise.all(regs.map(r => r.unregister())).catch(() => {});
+      }
+      // 3. Delete IndexedDB databases (projects, media, settings)
+      await new Promise(res => { const r = indexedDB.deleteDatabase('peachmint'); r.onsuccess = r.onerror = res; }).catch(() => {});
+      // 4. Clear OPFS (all media files)
+      try {
+        const root = await navigator.storage.getDirectory();
+        for await (const name of root.keys()) {
+          await root.removeEntry(name, { recursive: true }).catch(() => {});
+        }
+      } catch {}
+      location.reload();
     }
   </script>
 
