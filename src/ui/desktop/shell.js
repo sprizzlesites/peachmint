@@ -195,6 +195,7 @@ class DesktopShell {
     this._history.clear();
     this._hideStartScreen();
     this._currentTime = 0;
+    this._selectedClip = null;
     this._updateTimecode(0);
     this._setSaveStatus('');
     this._library?.setProject(project);
