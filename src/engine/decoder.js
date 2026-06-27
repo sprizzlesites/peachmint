@@ -102,15 +102,17 @@ export class ClipDecoder {
     if (Math.abs(vid.currentTime - time) < 1 / 1200) return; // already close enough
 
     return new Promise((resolve) => {
-      const onSeeked = () => { cleanup(); resolve(); };
-      const onErr   = () => { cleanup(); resolve(); }; // resolve on error so rendering continues
+      let settled = false;
+      const done = () => { if (settled) return; settled = true; cleanup(); resolve(); };
       const cleanup = () => {
-        vid.removeEventListener('seeked', onSeeked);
-        vid.removeEventListener('error', onErr);
+        vid.removeEventListener('seeked', done);
+        vid.removeEventListener('error', done);
       };
-      vid.addEventListener('seeked', onSeeked, { once: true });
-      vid.addEventListener('error', onErr, { once: true });
+      vid.addEventListener('seeked', done, { once: true });
+      vid.addEventListener('error', done, { once: true });
       vid.currentTime = Math.max(0, time);
+      // Mobile Safari sometimes never fires 'seeked' on first seek; fall through after 400 ms.
+      setTimeout(done, 400);
     });
   }
 

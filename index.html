@@ -580,7 +580,7 @@
         await Promise.all(regs.map(r => r.unregister())).catch(() => {});
       }
       // 3. Delete IndexedDB databases (projects, media, settings)
-      await new Promise(res => { const r = indexedDB.deleteDatabase('peachmint'); r.onsuccess = r.onerror = res; }).catch(() => {});
+      await new Promise(res => { const r = indexedDB.deleteDatabase('peachmint'); r.onsuccess = r.onerror = r.onblocked = () => res(); }).catch(() => {});
       // 4. Clear OPFS (all media files)
       try {
         const root = await navigator.storage.getDirectory();
