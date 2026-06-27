@@ -174,14 +174,14 @@ export class AudioEngine {
     for (const track of this._project.tracks) {
       if (this._stopped) return;
       if (track.muted) continue;
-      if (track.type !== 'audio') continue;
+      if (track.type === 'overlay') continue;
 
       for (const clip of track.clips) {
         if (this._stopped) return;
         if (clip.startTime + clip.duration <= fromTime) continue;
 
         const asset = this._project.assets.find((a) => a.id === clip.assetId);
-        if (!asset?.storageKey || asset.type !== 'audio') continue;
+        if (!asset?.storageKey || (asset.type !== 'audio' && asset.type !== 'video')) continue;
 
         await this._scheduleClip(clip, asset, fromTime, track.id).catch(() => {});
       }
