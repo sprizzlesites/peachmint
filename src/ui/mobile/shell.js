@@ -735,6 +735,7 @@ class MobileShell {
       { label: '⬇ Export MP4',   action: () => this._goToPanel(3),          disabled: !hasPrj },
       { label: '🖥 Desktop UI',   action: () => { localStorage.setItem('peachmint_ui_mode', 'desktop'); location.reload(); } },
       { label: '⚙ System Info',  action: () => window.__peachmint?.showSysCheck() },
+      { label: '🗑 Clear App Cache', action: () => this._showClearCacheDialog() },
     ];
     const sheet = document.createElement('div');
     sheet.className = 'pm-m-sheet';
@@ -845,6 +846,35 @@ class MobileShell {
       });
       dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') { dialog.close(); dialog.remove(); } });
     });
+  }
+
+  _showClearCacheDialog() {
+    const d = document.createElement('dialog');
+    d.setAttribute('aria-modal', 'true');
+    d.innerHTML = `
+      <h2 style="margin:0 0 10px;font-size:1rem">Clear App Cache?</h2>
+      <p style="color:var(--text-muted);font-size:0.82rem;line-height:1.5;margin:0 0 16px">
+        Deletes the service worker cache and reloads the app from the network.
+        Your saved projects are <strong>not</strong> affected.
+      </p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="pm-m-btn-ghost" id="cc-cancel">Cancel</button>
+        <button class="pm-m-btn-primary" id="cc-confirm">Clear &amp; Reload</button>
+      </div>`;
+    document.body.appendChild(d);
+    d.showModal();
+    d.querySelector('#cc-cancel').addEventListener('click', () => { d.close(); d.remove(); });
+    d.querySelector('#cc-confirm').addEventListener('click', async () => {
+      d.close(); d.remove();
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+        const regs = await navigator.serviceWorker?.getRegistrations() ?? [];
+        await Promise.all(regs.map((r) => r.unregister()));
+      } catch { /* ignore — reload regardless */ }
+      location.reload();
+    });
+    d.addEventListener('keydown', (e) => { if (e.key === 'Escape') { d.close(); d.remove(); } });
   }
 
   _showInfoDialog(title, msg) {
