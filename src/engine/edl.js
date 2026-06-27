@@ -164,6 +164,15 @@ export function splitClip(project, clipId, splitTime) {
     });
     right.properties = JSON.parse(JSON.stringify(clip.properties));
 
+    // Split keyframes: left keeps those before splitTime, right gets those at/after splitTime.
+    const rightKfs = {};
+    for (const [path, kfs] of Object.entries(clip.keyframes)) {
+      const rightArr = kfs.filter((k) => k.time >= splitTime);
+      if (rightArr.length) rightKfs[path] = rightArr.map((k) => ({ ...k }));
+      clip.keyframes[path] = kfs.filter((k) => k.time < splitTime);
+    }
+    right.keyframes = rightKfs;
+
     track.clips.splice(idx + 1, 0, right);
     touch(project);
     return { left: clip, right };

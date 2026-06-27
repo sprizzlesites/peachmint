@@ -467,12 +467,13 @@ export class Timeline {
       // Track name edit
       const nameEl = div.querySelector('.pm-tl-th-name');
       nameEl.addEventListener('blur', () => {
-        const newName = nameEl.textContent.trim() || track.name;
-        if (newName !== track.name) {
+        const oldName = track.name;
+        const newName = nameEl.textContent.trim() || oldName;
+        if (newName !== oldName) {
           this._history.execute({
             label: 'Rename track',
             execute: () => { track.name = newName; this._pm.markDirty(); },
-            undo: () => { track.name = track.name; nameEl.textContent = track.name; this._pm.markDirty(); },
+            undo: () => { track.name = oldName; nameEl.textContent = oldName; this._pm.markDirty(); },
           });
         }
       });
