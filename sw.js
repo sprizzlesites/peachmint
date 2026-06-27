@@ -6,7 +6,7 @@
 // All APP_SHELL paths are relative to the SW location so the app works at
 // any deployment sub-path (e.g. GitHub Pages /peachmint/ or a custom domain /).
 
-const CACHE_NAME = 'peachmint-v27';
+const CACHE_NAME = 'peachmint-v28';
 const APP_SHELL = [
   './',
   './index.html',
