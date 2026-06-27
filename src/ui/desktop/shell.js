@@ -89,7 +89,7 @@ class DesktopShell {
     });
     this._previewEngine.addEventListener('preview:ended', () => {
       this._isPlaying = false;
-      this._toolbar?.setPlayState(false);
+      this._setPlayBtnState(false);
       this._audioEngine?.stop();
       this._currentTime = 0;
       this._updateTimecode(0);
@@ -252,7 +252,7 @@ class DesktopShell {
   _play() {
     if (this._isPlaying || !this._pm.project) return;
     this._isPlaying = true;
-    this._toolbar?.setPlayState(true);
+    this._setPlayBtnState(true);
     this._previewEngine?.play(this._currentTime);
     this._audioEngine?.play(this._currentTime).catch(() => {});
   }
@@ -262,7 +262,15 @@ class DesktopShell {
     this._isPlaying = false;
     this._previewEngine?.stop();
     this._audioEngine?.stop();
-    this._toolbar?.setPlayState(false);
+    this._setPlayBtnState(false);
+  }
+
+  _setPlayBtnState(playing) {
+    const btn = this._el.querySelector('#pm-play-btn');
+    if (!btn) return;
+    btn.textContent = playing ? '⏸' : '▶';
+    btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    btn.classList.toggle('playing', playing);
   }
 
   // ─── Clip selection ──────────────────────────────────────────────────────────
