@@ -131,6 +131,8 @@ export class PreviewEngine extends EventTarget {
 
   async seekTo(time) {
     if (!this._ready) return;
+    // Stop any natively-playing video elements before seeking.
+    this._decoders?.stopAllPlay();
     this._currentTime = Math.max(0, time);
     await this._renderFrame(this._currentTime);
   }
@@ -143,6 +145,9 @@ export class PreviewEngine extends EventTarget {
     this._playStartTime = fromTime ?? this._currentTime;
     this._playStartWall = performance.now();
     this._scheduleRaf();
+    // Kick off native video playback in the background for active clips.
+    // This also enables audio from video files during preview.
+    this._startVideoPlayback(this._playStartTime).catch(() => {});
   }
 
   stop() {
@@ -151,11 +156,36 @@ export class PreviewEngine extends EventTarget {
       cancelAnimationFrame(this._rafId);
       this._rafId = null;
     }
+    // Pause all natively-playing video elements.
+    this._decoders?.stopAllPlay();
   }
 
   get isPlaying()   { return this._playing; }
   get currentTime() { return this._currentTime; }
   get isReady()     { return this._ready; }
+
+  // ─── Native video playback ────────────────────────────────────────────────────
+
+  /**
+   * For each video clip active at `fromTime`, start its decoder playing natively.
+   * This lets the browser handle A/V sync and enables audio output from video files.
+   */
+  async _startVideoPlayback(fromTime) {
+    if (!this._project || !this._decoders) return;
+    const active = clipsAtTime(this._project, fromTime);
+    for (const { clip, track } of active) {
+      if (!this._playing) return; // stopped while we were loading
+      if (track.type === 'audio') continue;
+      const asset = this._project.assets.find((a) => a.id === clip.assetId);
+      if (!asset?.storageKey || asset.type === 'audio' || asset.type === 'image') continue;
+      try {
+        const dec = await this._decoders.getDecoder(this._proxyAsset(asset));
+        if (!this._playing) return;
+        const clipTime = (fromTime - clip.startTime) * (clip.speed ?? 1) + (clip.trimIn ?? 0);
+        await dec.startPlay(Math.max(0, clipTime), clip.speed ?? 1, clip.properties?.volume ?? 1);
+      } catch {}
+    }
+  }
 
   // ─── RAF loop ─────────────────────────────────────────────────────────────────
 

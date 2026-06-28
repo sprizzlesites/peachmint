@@ -56,7 +56,8 @@ export class ClipDecoder {
     const vid = document.createElement('video');
     vid.src = this._blobUrl;
     vid.preload = 'auto';
-    vid.muted = true;
+    vid.muted = true;   // muted by default; unmuted in startPlay()
+    vid.volume = 1;
     vid.playsInline = true;
     vid.crossOrigin = 'anonymous';
     // Must be in the DOM for GPU decode to work, but invisible
@@ -74,6 +75,10 @@ export class ClipDecoder {
       vid.addEventListener('error', onErr, { once: true });
       vid.load();
     });
+
+    // iOS Safari does not decode any pixel data until play() is called, even with
+    // preload='auto'. A muted play+pause primes the first frame so texImage2D works.
+    try { await vid.play(); vid.pause(); vid.currentTime = 0; } catch {}
 
     this._videoEl = vid;
   }
@@ -94,12 +99,16 @@ export class ClipDecoder {
   /**
    * Seek the video element to a media-local time in seconds.
    * Returns after the browser confirms the seek. No-op for images.
+   * No-op when the video is already playing (native playback in progress).
    * @param {number} time — media time in seconds
    */
   async seekTo(time) {
     if (!this._ready || !this._videoEl) return; // images: no-op
     const vid = this._videoEl;
-    if (Math.abs(vid.currentTime - time) < 1 / 1200) return; // already close enough
+    // During native playback, don't interrupt with explicit seeks.
+    if (!vid.paused) return;
+    // Skip if we already have frame data at the right position.
+    if (vid.readyState >= 2 && Math.abs(vid.currentTime - time) < 1 / 1200) return;
 
     return new Promise((resolve) => {
       let settled = false;
@@ -111,15 +120,45 @@ export class ClipDecoder {
       vid.addEventListener('seeked', done, { once: true });
       vid.addEventListener('error', done, { once: true });
       vid.currentTime = Math.max(0, time);
-      // Mobile Safari sometimes never fires 'seeked' on first seek; fall through after 400 ms.
+      // Mobile Safari sometimes never fires 'seeked'; fall through after 400 ms.
       setTimeout(done, 400);
     });
   }
 
+  /**
+   * Start native video playback (used by preview engine during play mode).
+   * Unmutes the video so its audio plays through the device speaker.
+   * @param {number} time — media-local start time in seconds
+   * @param {number} speed — playback rate
+   * @param {number} volume — 0–1
+   */
+  async startPlay(time, speed = 1, volume = 1) {
+    if (!this._videoEl) return;
+    const vid = this._videoEl;
+    vid.muted = false;
+    vid.volume = Math.max(0, Math.min(1, volume));
+    vid.playbackRate = Math.max(0.1, speed);
+    if (Math.abs(vid.currentTime - time) > 0.1) vid.currentTime = Math.max(0, time);
+    try { await vid.play(); } catch {}
+  }
+
+  /** Pause native playback and mute (returns to scrub mode). */
+  stopPlay() {
+    if (!this._videoEl) return;
+    this._videoEl.pause();
+    this._videoEl.muted = true;
+  }
+
+  get isVideoPlaying() { return this._videoEl ? !this._videoEl.paused : false; }
+
   /** Returns an element usable as a WebGL texture source, or null if not ready. */
   getSource() {
     if (!this._ready) return null;
-    return this._videoEl ?? this._imageEl ?? null;
+    if (this._videoEl) {
+      // Only return the video element when it has actual pixel data decoded.
+      return this._videoEl.readyState >= 2 ? this._videoEl : null;
+    }
+    return this._imageEl ?? null;
   }
 
   get naturalWidth()  { return this._videoEl?.videoWidth ?? this._imageEl?.naturalWidth  ?? 0; }
@@ -184,6 +223,11 @@ export class DecoderPool {
     await decoder.load(asset);
     this._pool.set(asset.id, { decoder, lastUsed: Date.now() });
     return decoder;
+  }
+
+  /** Pause all playing video decoders (call on preview stop or seek). */
+  stopAllPlay() {
+    for (const { decoder } of this._pool.values()) decoder.stopPlay();
   }
 
   dispose() {
